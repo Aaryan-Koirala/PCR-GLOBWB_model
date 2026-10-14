@@ -37,6 +37,9 @@ import waterBodies_for_modflow as waterBodies
 
 import virtualOS as vos
 from ncConverter import *
+import math                                      # PCR-SUR: Python 2 got these via 'from pcraster.framework import *'
+import shutil
+from pcraster import pcr2numpy, scalar
 
 class GroundwaterModflow(object):
     

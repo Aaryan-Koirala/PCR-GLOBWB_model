@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 import virtualOS as vos
 from ncConverter import *
+from pcraster import pcr2numpy                   # PCR-SUR: Python 2 got this via 'from pcraster.framework import *'
 
 import waterBodies
 

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 import virtualOS as vos
 from ncConverter import *
+from pcraster import pcr2numpy, mapnormal        # PCR-SUR: Python 2 got these via 'from pcraster.framework import *'
 import ETPFunctions as refPotET
 
 class Meteo(object):

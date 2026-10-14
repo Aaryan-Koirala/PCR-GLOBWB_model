@@ -303,7 +303,7 @@ class Configuration(object):
         # adjustment for routingOptions
         if 'routingMethod' not in list(self.routingOptions.keys()):
             logger.warning('The "routingMethod" is not defined in the "routingOptions" of the configuration file. "accuTravelTime" is used in this run.')
-            iniItems.routingOptions['routingMethod'] = "accuTravelTime"
+            self.routingOptions['routingMethod'] = "accuTravelTime"   # PCR-SUR: was 'iniItems.' (undefined name)
 
         # adjustment for option 'limitRegionalAnnualGroundwaterAbstraction'
         if 'pumpingCapacityNC' not in list(self.groundwaterOptions.keys()):

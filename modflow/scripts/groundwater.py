@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 import virtualOS as vos
 from ncConverter import *
+import types                                     # PCR-SUR: Python 2 got these via 'from pcraster.framework import *'
+from pcraster import pcr2numpy, mapnormal
 
 class Groundwater(object):
 
