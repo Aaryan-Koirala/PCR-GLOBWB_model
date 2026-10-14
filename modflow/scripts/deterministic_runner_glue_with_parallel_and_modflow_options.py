@@ -25,6 +25,7 @@
 import os
 import sys
 import datetime
+import time
 
 import pcraster as pcr
 from pcraster.framework import DynamicModel
@@ -281,6 +282,7 @@ class DeterministicRunner(DynamicModel):
                 modflow_is_ready = False
                 self.count_check = 0
                 while modflow_is_ready == False:
+                    time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
                     if datetime.datetime.now().second == 14 or\
                        datetime.datetime.now().second == 29 or\
                        datetime.datetime.now().second == 34 or\
@@ -290,6 +292,7 @@ class DeterministicRunner(DynamicModel):
             # wait until merged files are ready
             merged_files_are_ready = False
             while merged_files_are_ready == False:
+                time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
                 self.count_check = 0
                 if datetime.datetime.now().second == 14 or\
                    datetime.datetime.now().second == 29 or\

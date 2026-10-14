@@ -25,6 +25,7 @@
 import os
 import sys
 import datetime
+import time
 import glob
 import shutil
 
@@ -102,6 +103,7 @@ class DeterministicRunner(DynamicModel):
             pcrglobwb_is_ready = False
             self.count_check = 0
             while pcrglobwb_is_ready == False:
+                time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
                 if datetime.datetime.now().second == 14 or\
                    datetime.datetime.now().second == 29 or\
                    datetime.datetime.now().second == 34 or\
