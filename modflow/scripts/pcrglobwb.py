@@ -146,9 +146,12 @@ class PCRGlobWB(object):
             
             self.variables = {}
             
-            self.variables['monthly_discharge_cubic_meter_per_second'] = pcr.ifthen(self.routing.landmask, pcr.max(0.0, self.routing.disChanWaterBody))
-            self.variables['groundwater_recharge_meter_per_day'] = pcr.ifthen(self.routing.landmask, self.landSurface.gwRecharge)
-            self.variables['groundwater_abstraction_meter_per_day'] = pcr.ifthen(self.routing.landmask, self.landSurface.totalGroundwaterAbstraction)
+            # PCR-SUR: start the monthly sums at ZERO. The original initialised them with day 1's values and then added
+            #          day 1 again in the lines below, so day 1 was counted twice while the sum was divided by the
+            #          number of days in the month.
+            self.variables['monthly_discharge_cubic_meter_per_second'] = pcr.ifthen(self.routing.landmask, pcr.scalar(0.0))
+            self.variables['groundwater_recharge_meter_per_day'] = pcr.ifthen(self.routing.landmask, pcr.scalar(0.0))
+            self.variables['groundwater_abstraction_meter_per_day'] = pcr.ifthen(self.routing.landmask, pcr.scalar(0.0))
         
         self.variables['monthly_discharge_cubic_meter_per_second'] += pcr.ifthen(self.routing.landmask, pcr.max(0.0, self.routing.disChanWaterBody))
         self.variables['groundwater_recharge_meter_per_day'] += pcr.ifthen(self.routing.landmask, self.landSurface.gwRecharge)
