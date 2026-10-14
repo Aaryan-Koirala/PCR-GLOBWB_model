@@ -30,7 +30,7 @@ class Meteo(object):
 
         # option to ignore snow (temperature will be set to 25 deg C if this option is activated)
         self.ignore_snow = False
-        if 'ignoreSnow' in iniItems.meteoOptions.keys() and iniItems.meteoOptions['ignoreSnow'] == "True":
+        if 'ignoreSnow' in list(iniItems.meteoOptions.keys()) and iniItems.meteoOptions['ignoreSnow'] == "True":
             self.ignore_snow = True
 
         self.preFileNC = iniItems.meteoOptions['precipitationNC']        # starting from 19 Feb 2014, we only support netcdf input files
@@ -199,7 +199,7 @@ class Meteo(object):
         # forcing smoothing options: - THIS is still experimental. PS: MUST BE TESTED.
         self.forcingSmoothing = False
         if 'meteoDownscalingOptions' in iniItems.allSections and \
-           'smoothingWindowsLength' in iniItems.meteoDownscalingOptions.keys():
+           'smoothingWindowsLength' in list(iniItems.meteoDownscalingOptions.keys()):
 
             if float(iniItems.meteoDownscalingOptions['smoothingWindowsLength']) > 0.0:
                 self.forcingSmoothing = True
@@ -351,8 +351,8 @@ class Meteo(object):
                                  useDoy = None,
                                  cloneMapFileName=self.cloneMap,\
                                  LatitudeLongitude = True)
-	# unit K to C
-	self.temperature = temperature - 273.15
+        # unit K to C
+        self.temperature = temperature - 273.15
 
         # Downscaling precipitation and temperature
         if self.downscalePrecipitationOption: self.downscalePrecipitation(currTimeStep)

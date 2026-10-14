@@ -52,7 +52,7 @@ class WaterBodies(object):
 
         # option to perform a run with only natural lakes (without reservoirs)
         self.onlyNaturalWaterBodies = False
-        if "onlyNaturalWaterBodies" in iniItems.routingOptions.keys() and iniItems.routingOptions['onlyNaturalWaterBodies'] == "True":
+        if "onlyNaturalWaterBodies" in list(iniItems.routingOptions.keys()) and iniItems.routingOptions['onlyNaturalWaterBodies'] == "True":
             logger.info("Using only natural water bodies identified in the year 1900. All reservoirs in 1900 are assumed as lakes.")
             self.onlyNaturalWaterBodies  = True
             self.dateForNaturalCondition = "1900-01-01"                  # The run for a natural condition should access only this date.   

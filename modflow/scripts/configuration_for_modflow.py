@@ -22,7 +22,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import ConfigParser
+import configparser
 import optparse
 import os
 import sys
@@ -85,7 +85,7 @@ class Configuration(object):
 
         if 'globalMergingAndModflowOptions' in self.allSections:
 
-            if 'online_coupling_between_pcrglobwb_and_modflow' in self.globalMergingAndModflowOptions.keys() and\
+            if 'online_coupling_between_pcrglobwb_and_modflow' in list(self.globalMergingAndModflowOptions.keys()) and\
                self.globalMergingAndModflowOptions['online_coupling_between_pcrglobwb_and_modflow'] == "True":\
                self.online_coupling_between_pcrglobwb_and_modflow = True
 
@@ -100,17 +100,17 @@ class Configuration(object):
             self.globalOptions['outputDir'] = self.main_output_directory + "/modflow/"
             
             # temporary modflow output folder
-            if 'tmp_modflow_dir' in self.globalMergingAndModflowOptions.keys():
+            if 'tmp_modflow_dir' in list(self.globalMergingAndModflowOptions.keys()):
                 self.globalOptions['tmp_modflow_dir'] = self.globalMergingAndModflowOptions['tmp_modflow_dir']
 			
 			# water bodies file 
             if 'modflowParameterOptions' in self.allSections and\
-               'waterBodyInputNC' not in self.modflowParameterOptions.keys():
+               'waterBodyInputNC' not in list(self.modflowParameterOptions.keys()):
                 self.modflowParameterOptions['waterBodyInputNC'] = self.routingOptions['waterBodyInputNC']
 			
             # option to use only natural water bodies:
             if 'modflowParameterOptions' in self.allSections and\
-               'onlyNaturalWaterBodies' not in self.modflowParameterOptions.keys():
+               'onlyNaturalWaterBodies' not in list(self.modflowParameterOptions.keys()):
                 self.modflowParameterOptions['onlyNaturalWaterBodies'] = self.routingOptions['onlyNaturalWaterBodies']
 			
             # reportingOptions are taken from 'reportingForModflowOptions
@@ -145,9 +145,9 @@ class Configuration(object):
         # order: DEBUG, INFO, WARNING, ERROR, CRITICAL
         
         # log level based on ini/configuration file:
-        if "log_level_console" in self.globalOptions.keys():
+        if "log_level_console" in list(self.globalOptions.keys()):
             log_level_console = self.globalOptions['log_level_console']        
-        if "log_level_file" in self.globalOptions.keys():
+        if "log_level_file" in list(self.globalOptions.keys()):
             log_level_file = self.globalOptions['log_level_file']        
 
         # log level for debug mode:
@@ -203,7 +203,7 @@ class Configuration(object):
 
     def parse_configuration_file(self, modelFileName):
 
-        config = ConfigParser.ConfigParser()
+        config = configparser.RawConfigParser()
         config.optionxform = str
         config.read(modelFileName)
 
@@ -287,7 +287,7 @@ class Configuration(object):
         
         # making temporary directory for modflow calculation and make sure that the directory is empty
         self.tmp_modflow_dir = "tmp_modflow/"
-        if 'tmp_modflow_dir' in self.globalOptions.keys():
+        if 'tmp_modflow_dir' in list(self.globalOptions.keys()):
             self.tmp_modflow_dir = self.globalOptions['tmp_modflow_dir']
         self.tmp_modflow_dir = vos.getFullPath(self.tmp_modflow_dir, \
                                                self.globalOptions['outputDir'])+"/"

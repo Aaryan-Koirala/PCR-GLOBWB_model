@@ -129,7 +129,7 @@ class DeterministicRunner(DynamicModel):
                 if clean_up_pcraster_maps:                                                                                    
                     files_to_be_removed = glob.glob(str(self.configuration.main_output_directory) + "/M*/maps/*" + str(self.modelTime.fulldate) + "*")
                     for f in files_to_be_removed: 
-                        print f
+                        print(f)
                         os.remove(f)
 
                 # update MODFLOW model (It will pick up current model time from the modelTime object)
@@ -154,7 +154,7 @@ class DeterministicRunner(DynamicModel):
             if clean_up_pcraster_maps:                                                                                    
                 files_to_be_removed = glob.glob(str(self.configuration.main_output_directory) + "/M*/states/*" + str(self.modelTime.fulldate) + "*")
                 for f in files_to_be_removed:
-                    print f
+                    print(f)
                     os.remove(f)
 
 
@@ -229,7 +229,7 @@ class DeterministicRunner(DynamicModel):
             if status == False: return status
             if status: self.count_check = 0            
                     
-        print status
+        print(status)
         
         return status
 

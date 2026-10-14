@@ -67,8 +67,8 @@ def getMin(x,a):
 def netcdfList(inputDir):
 	'''creates a dictionary of netcdf files'''
 	netcdfList = glob.glob(os.path.join(inputDir, '*.nc'))
-	print inputDir
-	print os.path.join(inputDir, '*.nc')
+	print(inputDir)
+	print(os.path.join(inputDir, '*.nc'))
 	ll=[]
 	for ncFile in netcdfList:
 		ll.append(ncFile.split('/')[-1])
@@ -95,7 +95,7 @@ def mergeNetCDF(inputTuple):
 	startDate    = inputTuple[7]
 	endDate      = inputTuple[8] 
 	
-	print 'combining files for %s'%ncName
+	print('combining files for %s'%ncName)
 	scriptStartTime = tm.time()
 	
 	# - dictionary holding netCDFInput
@@ -104,7 +104,7 @@ def mergeNetCDF(inputTuple):
 	# - netDCF output file name
 	netCDFOutput = outputDir + "/" + ncName.split(".")[0] + "_" + startDate + "_to_" + endDate + ".nc"
 	
-	print netCDFOutput
+	print(netCDFOutput)
 	
 	#~ ncFormat = 'NETCDF3_CLASSIC'
 	#~ ncFormat = 'NETCDF4'
@@ -135,11 +135,11 @@ def mergeNetCDF(inputTuple):
 		ed = str(endDate).split('-')
 		endTime   = datetime.datetime(int(ed[0]), int(ed[1]), int(ed[2]), 0)
 		
-		print netCDFInput.values()[0]
+		print(list(netCDFInput.values())[0])
 		
 		# open the first netcdf file to get time units and time calendar
-		ncFile = netCDFInput.values()[0]
-		print ncFile
+		ncFile = list(netCDFInput.values())[0]
+		print(ncFile)
 		f = nc.Dataset(ncFile)
 		time_units    = f.variables['time'].units
 		time_calendar = f.variables['time'].calendar
@@ -184,23 +184,23 @@ def mergeNetCDF(inputTuple):
 		# time variables that will be used (using numerical values)
 		uniqueTimes = nc.date2num(datetime_range, time_units, time_calendar)
 		
-		print timeStepType
-		print datetime_range
-		print uniqueTimes
+		print(timeStepType)
+		print(datetime_range)
+		print(uniqueTimes)
 	
-	for ncFile in netCDFInput.values():
+	for ncFile in list(netCDFInput.values()):
 
 		# open netCDF file
-		if ncFile in filecache.keys():
+		if ncFile in list(filecache.keys()):
 			rootgrp = filecache[ncFile]
-			print "Cached: ", ncFile
+			print("Cached: ", ncFile)
 		else:
 			rootgrp = nc.Dataset(ncFile)
 			filecache[ncFile] = rootgrp
-			print "New: ", ncFile
+			print("New: ", ncFile)
 
 		# and get index
-		index = netCDFInput.keys()[netCDFInput.values().index(ncFile)]
+		index = list(netCDFInput.keys())[list(netCDFInput.values()).index(ncFile)]
 
 		# retrieve dimensions,  atributes, variables, and missing value
 		dimensions[index]= rootgrp.dimensions.copy()
@@ -208,7 +208,7 @@ def mergeNetCDF(inputTuple):
 		attributes[index]= rootgrp.__dict__.copy()
 	
 		#-set new values
-		for key in dimensions[index].keys():
+		for key in list(dimensions[index].keys()):
 			if 'lat' in key.lower():
 				latVar= key
 			if 'lon' in key.lower():
@@ -219,9 +219,9 @@ def mergeNetCDF(inputTuple):
 		lonMax= getMax(lonMax,variables[index][lonVar][:])
 	
 		#-assign calendar (used)
-		if 'time' in  variables[index].keys():
+		if 'time' in  list(variables[index].keys()):
 			for name in variables[index]['time'].ncattrs():
-				if name not in calendar_used.keys():
+				if name not in list(calendar_used.keys()):
 					calendar_used[name]= getattr(variables[index]['time'],name)
 				else:
 					if getattr(variables[index]['time'],name) != calendar_used[name]:
@@ -233,15 +233,15 @@ def mergeNetCDF(inputTuple):
 			#~ else:
 				#~ uniqueTimes= np.unique(np.c_[uniqueTimes[:],variables[index]['time'][:]])
 			uniqueTimes.sort()
-		keys= variables[index].keys()
-		for key in dimensions[index].keys():
+		keys= list(variables[index].keys())
+		for key in list(dimensions[index].keys()):
 			if key in keys:
 				keys.remove(key)
 		key= keys[0]
 		if variableName == None:
 			variableName= key
 		else:
-			if key <> variableName:
+			if key != variableName:
 				rootgrp.close()
 				sys.exit('variables are incompatible')
 		#-Missing Value
@@ -283,7 +283,7 @@ def mergeNetCDF(inputTuple):
 	date_time=rootgrp.createDimension('time',len(uniqueTimes))
 	#~ date_time=rootgrp.createDimension('time', None)
 	date_time= rootgrp.createVariable('time','f8',('time',))
-	for attr,value in calendar_used.iteritems():
+	for attr,value in calendar_used.items():
 		setattr(date_time,attr,str(value))
 	date_time[:]= uniqueTimes
 
@@ -296,13 +296,13 @@ def mergeNetCDF(inputTuple):
 	variable = rootgrp.createVariable(variableName, 'f4', varStructure, fill_value = MV, zlib = using_zlib)
 
 	# - set variable attributes and overall values
-	for index in attributes.keys():
+	for index in list(attributes.keys()):
 		for name in variables[index][variableName].ncattrs():
 			try:
 				setattr(variable,name,str(getattr(variables[index][variableName],name)))
 			except:
 				pass
-		for attr,value in attributes[index].iteritems():
+		for attr,value in attributes[index].items():
 			setattr(rootgrp,attr,str(value)) 
 	
 	#-write to file
@@ -312,7 +312,7 @@ def mergeNetCDF(inputTuple):
 	#NOTE: this assumes it is a timed variable!
 	#-iterate over time steps and retrieve values
 	
-	print 'nr of time steps = %s, nr of files = %s ' % (len(uniqueTimes), len(netCDFInput))
+	print('nr of time steps = %s, nr of files = %s ' % (len(uniqueTimes), len(netCDFInput)))
 	i_time = 0
 	for time in uniqueTimes[:]:
 
@@ -321,19 +321,19 @@ def mergeNetCDF(inputTuple):
 		#~ print 'processing %s for time %.0d' %(ncName, time)
 
 		i_time = i_time + 1
-		print 'processing %s %i from %i' %(ncName, i_time, len(uniqueTimes))
+		print('processing %s %i from %i' %(ncName, i_time, len(uniqueTimes)))
 		
 		#-create empty field to fill
 		variableArray= np.ones((len(latitudes),len(longitudes)))*MV
 		
 		#-iterate over input netCDFs
-		for ncFile in netCDFInput.values():
+		for ncFile in list(netCDFInput.values()):
 			#-open netCDF file and get dictionary index
 			rootgrp= nc.Dataset(ncFile,'r',format= ncFormat)
-			index= netCDFInput.keys()[netCDFInput.values().index(ncFile)]
+			index= list(netCDFInput.keys())[list(netCDFInput.values()).index(ncFile)]
 			#-retrieve posCnt and process
 			#-get row and column indices from lats and lons
-			for key in dimensions[index].keys():
+			for key in list(dimensions[index].keys()):
 				if 'lat' in key.lower():
 					latVar= key
 				if 'lon' in key.lower():
@@ -363,13 +363,13 @@ def mergeNetCDF(inputTuple):
 				variableArray[row0:row1,col0:col1][variableArray[row0:row1,col0:col1] == MV]= \
 					sampleArray[variableArray[row0:row1,col0:col1] == MV]
 
-				print 'time is present :' + str(date_value)
+				print('time is present :' + str(date_value))
 
 			except:
 				if posCnt == None:
-					print 'time not present'
+					print('time not present')
 				else:
-					print 'error  in resampled'
+					print('error  in resampled')
 			#-close
 			rootgrp.close()
 	
@@ -382,7 +382,7 @@ def mergeNetCDF(inputTuple):
 		rootgrp.close()
 	
 	secs = int(tm.time() - scriptStartTime)
-	print "Processing %s took %s hh:mm:ss\n" % (ncName, str(datetime.timedelta(seconds=secs)))
+	print("Processing %s took %s hh:mm:ss\n" % (ncName, str(datetime.timedelta(seconds=secs))))
 
 
 ##################################
@@ -417,7 +417,7 @@ endDate    = str(sys.argv[5])
 
 # list of netcdf files that will be merged:
 netcdfList = str(sys.argv[6])
-print netcdfList
+print(netcdfList)
 netcdfList = list(set(netcdfList.split(",")))
 if file_type == "outDailyTotNC": netcdfList = ['%s_dailyTot_output.nc'%var for var in netcdfList]
 if file_type == "outMonthTotNC": netcdfList = ['%s_monthTot_output.nc'%var for var in netcdfList]

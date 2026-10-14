@@ -57,18 +57,18 @@ smallNumber = 1E-39
 netcdf_suffixes = ('.nc4','.nc')
 
 def getFileList(inputDir, filePattern):
-	'''creates a dictionary of	files meeting the pattern specified'''
-	fileNameList = glob.glob(os.path.join(inputDir, filePattern))
-	ll= {}
-	for fileName in fileNameList:
-		ll[os.path.split(fileName)[-1]]= fileName
-	return ll
+        '''creates a dictionary of	files meeting the pattern specified'''
+        fileNameList = glob.glob(os.path.join(inputDir, filePattern))
+        ll= {}
+        for fileName in fileNameList:
+                ll[os.path.split(fileName)[-1]]= fileName
+        return ll
 
 def checkVariableInNC(ncFile,varName):
 
     logger.debug('Check whether the variable: '+str(varName)+' is defined in the file: '+str(ncFile))
     
-    if ncFile in filecache.keys():
+    if ncFile in list(filecache.keys()):
         f = filecache[ncFile]
         #~ print "Cached: ", ncFile
     else:
@@ -78,7 +78,7 @@ def checkVariableInNC(ncFile,varName):
     
     varName = str(varName)
     
-    return varName in f.variables.keys()
+    return varName in list(f.variables.keys())
 
 
 def netcdf2PCRobjCloneWithoutTime(ncFile, varName,
@@ -97,7 +97,7 @@ def netcdf2PCRobjCloneWithoutTime(ncFile, varName,
     #     Only works if cells are 'square'.
     #     Only works if cellsizeClone <= cellsizeInput
     # Get netCDF file and variable name:
-    if ncFile in filecache.keys():
+    if ncFile in list(filecache.keys()):
         f = filecache[ncFile]
         #~ print "Cached: ", ncFile
     else:
@@ -192,7 +192,7 @@ def netcdf2PCRobjClone(ncFile,varName,dateInput,\
     
     logger.debug('reading variable: '+str(varName)+' from the file: '+str(ncFile))
     
-    if ncFile in filecache.keys():
+    if ncFile in list(filecache.keys()):
         f = filecache[ncFile]
         #~ print "Cached: ", ncFile
     else:
@@ -415,7 +415,7 @@ def netcdf2PCRobjCloneJOYCE(ncFile,varName,dateInput,\
     
     logger.debug('reading variable: '+str(varName)+' from the file: '+str(ncFile))
     
-    if ncFile in filecache.keys():
+    if ncFile in list(filecache.keys()):
         f = filecache[ncFile]
         #~ print "Cached: ", ncFile
     else:
@@ -604,10 +604,10 @@ def netcdf2PCRobjCloneJOYCE(ncFile,varName,dateInput,\
 
         cropData = cropData[::-1,:]
         
-        print type(cropData)
+        print(type(cropData))
 
-        print "Test test tet"
-        print id(cropData)
+        print("Test test tet")
+        print(id(cropData))
         #~ print id(original)
 
         #~ cropData = cropData[::-1,:].copy()
@@ -827,9 +827,9 @@ def writePCRmapToDir(v,outFileName,outDir):
     pcr.report(v,fullFileName)
 
 def readPCRmapClone(v,cloneMapFileName,tmpDir,absolutePath=None,isLddMap=False,cover=None,isNomMap=False):
-	# v: inputMapFileName or floating values
-	# cloneMapFileName: If the inputMap and cloneMap have different clones,
-	#                   resampling will be done.   
+        # v: inputMapFileName or floating values
+        # cloneMapFileName: If the inputMap and cloneMap have different clones,
+        #                   resampling will be done.   
     logger.debug('read file/values: '+str(v))
     if v == "None":
         #~ PCRmap = str("None")
@@ -864,7 +864,7 @@ def readPCRmapClone(v,cloneMapFileName,tmpDir,absolutePath=None,isLddMap=False,c
     return PCRmap    
 
 def readPCRmap(v):
-	# v : fileName or floating values
+        # v : fileName or floating values
     if not re.match(r"[0-9.-]*$", v):
         PCRmap = pcr.readmap(v)
     else:
@@ -963,13 +963,13 @@ def getFullPath(inputPath,absolutePath,completeFileName = True):
         if absolutePath.endswith('/'): 
             absolutePath = str(absolutePath)
         else:
-			absolutePath = str(absolutePath)+'/'    
+                        absolutePath = str(absolutePath)+'/'    
         fullPath = str(absolutePath)+str(inputPath)
     
     if completeFileName:
         if fullPath.endswith(suffix): 
             fullPath = str(fullPath)
-    	else:
+        else:
             fullPath = str(fullPath)+'/'    
 
     return fullPath    		
@@ -1038,7 +1038,7 @@ def getMapAttributesALL(cloneMap,arcDegree=True):
     cOut,err = subprocess.Popen(str('mapattr -p %s ' %(cloneMap)), stdout=subprocess.PIPE,stderr=open(os.devnull),shell=True).communicate()
 
     if err !=None or cOut == []:
-        print "Something wrong with mattattr in virtualOS, maybe clone Map does not exist ? "
+        print("Something wrong with mattattr in virtualOS, maybe clone Map does not exist ? ")
         sys.exit()
     cellsize = float(cOut.split()[7])
     if arcDegree == True: cellsize = round(cellsize * 360000.)/360000.
@@ -1056,7 +1056,7 @@ def getMapAttributes(cloneMap,attribute,arcDegree=True):
     cOut,err = subprocess.Popen(str('mapattr -p %s ' %(cloneMap)), stdout=subprocess.PIPE,stderr=open(os.devnull),shell=True).communicate()
     #print cOut
     if err !=None or cOut == []:
-        print "Something wrong with mattattr in virtualOS, maybe clone Map does not exist ? "
+        print("Something wrong with mattattr in virtualOS, maybe clone Map does not exist ? ")
         sys.exit()
     #print cOut.split()
     co = None; err = None
@@ -1148,7 +1148,7 @@ def retrieveMapValue(pcrX,coordinates):
     nrRows= coordinates.shape[0]
     x= np.ones((nrRows))* MV
     tmpIDArray= pcr.pcr2numpy(pcrX,MV)
-    for iCnt in xrange(nrRows):
+    for iCnt in range(nrRows):
       row,col= coordinates[iCnt,:]
       if row != MV and col != MV:
         x[iCnt]= tmpIDArray[row,col]
@@ -1163,7 +1163,7 @@ def returnMapValue(pcrX,x,coord):
     #print tempIDArray
     temporary= tempIDArray
     nrRows= coord.shape[0]
-    for iCnt in xrange(nrRows):
+    for iCnt in range(nrRows):
       row,col= coord[iCnt,:]
       if row != MV and col != MV:
         tempIDArray[row,col]= (x[iCnt])
@@ -1303,7 +1303,7 @@ def waterBalance(  fluxesIn,  fluxesOut,  deltaStorages,  processName,   PrintOn
     # if abs(a) > 1e-5 or abs(b) > 1e-5:
     # if abs(a) > 1e-4 or abs(b) > 1e-4:
     if abs(a) > threshold or abs(b) > threshold:
-        print "WBError %s Min %f Max %f Mean %f" %(processName,a,b,c)
+        print("WBError %s Min %f Max %f Mean %f" %(processName,a,b,c))
     #    if abs(inflow + deltaS - outflow) > 1e-5:
     #        print "Water balance Error for %s on %s: in = %f\tout=%f\tdeltaS=%f\tBalance=%f" \
     #        %(processName,dateStr,inflow,outflow,deltaS,inflow + deltaS - outflow)
@@ -1455,7 +1455,7 @@ def waterAbstractionAndAllocation(water_demand_volume,available_water_volume,all
 def findLastYearInNCFile(ncFile):
 
     # open a netcdf file:
-    if ncFile in filecache.keys():
+    if ncFile in list(filecache.keys()):
         f = filecache[ncFile]
     else:
         f = nc.Dataset(ncFile)
