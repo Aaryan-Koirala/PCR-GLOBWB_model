@@ -604,8 +604,15 @@ class GroundwaterModflow(object):
         #self.specific_yield_1 = self.specificYield
         #self.specific_yield_2 = self.specificYield
                 # INGE : increase specific yields of aquifers (not confining layers)
-        self.specific_yield_2 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, 0.11, self.specificYield), self.specificYield)
-        self.specific_yield_1 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, self.specificYield * 3, self.specificYield), self.specificYield)
+        # PCR-SUR: the two lines below (original code) raised the specific yields in cells with a confining layer
+        # (upper layer 0.11, lower layer 3 x Sy), but ONLY for the reported/accessible storage (storGroundwater):
+        # MODFLOW itself (setStorage above, layer type 00) uses the unmodified specificYield. Reported storage was
+        # therefore inconsistent with MODFLOW's heads and fluxes. We use MODFLOW's own values so that storage
+        # changes equal Sy x head changes, as simulated (needed for GRACE comparison/assimilation).
+        #~ self.specific_yield_2 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, 0.11, self.specificYield), self.specificYield)
+        #~ self.specific_yield_1 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, self.specificYield * 3, self.specificYield), self.specificYield)
+        self.specific_yield_2 = self.specificYield
+        self.specific_yield_1 = self.specificYield
         
     def get_initial_heads(self):
                 
