@@ -1363,7 +1363,10 @@ class GroundwaterModflow(object):
         logger.info("Estimating surface water elevation.")
         
         # - convert discharge value to surface water elevation (m)
-        river_water_height = (self.channel_width**(-3/5)) * (discharge**(3/5)) * ((self.gradient)**(-3/10)) *(self.manningsN**(3/5))
+        # PCR-SUR: Manning exponents written as floats. Under Python 2 the original '3/5' and '-3/10' were integer
+        # divisions (0, -1, -1), which reduced this to 1/(width*gradient). Under Python 3 they are 0.6/-0.6/-0.3,
+        # the intended Manning relation h = (n Q / (w sqrt(S)))**0.6. Written explicitly to make the choice visible.
+        river_water_height = (self.channel_width**(-3./5.)) * (discharge**(3./5.)) * ((self.gradient)**(-3./10.)) *(self.manningsN**(3./5.))
         surface_water_elevation = self.dem_riverbed + \
                                   river_water_height
         #
