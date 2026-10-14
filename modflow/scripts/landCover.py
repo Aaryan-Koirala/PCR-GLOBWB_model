@@ -1876,7 +1876,9 @@ class LandCover(object):
                 
             # reduced (after pumping capacity) potential groundwater abstraction/demand (unit: m) and considering the average recharge (baseflow) 
             self.potGroundwaterAbstract = pcr.min(self.potGroundwaterAbstract, \
-                                      remainingPixelAnnualGroundwaterAbstractionLimit/routing.cellArea + pcr.max(0.0, routing.avgBaseflow / routing.cellArea))
+                                      remainingPixelAnnualGroundwaterAbstractionLimit/routing.cellArea + pcr.max(0.0, routing.avgBaseflow / routing.cellArea) * vos.secondsPerDay())
+            # PCR-SUR: routing.avgBaseflow is in m3/s, so avgBaseflow/cellArea is in m/s; * secondsPerDay() converts it to m/day,
+            #          the unit of potGroundwaterAbstract (the original added m/s to m/day, making this term ~86400x too small).
             ################## end of NEW METHOD (but still under development) ##########################################################################################################
 
 
@@ -2083,7 +2085,8 @@ class LandCover(object):
 
             # reduce the fossil irrigation and livestock demands with enough supply of non fossil groundwater (in order to minimize unrealistic areas of fossil groundwater abstraction)
             # - supply from the average recharge (baseflow) and non fossil groundwater allocation 
-            nonFossilGroundwaterSupply = pcr.max(pcr.max(0.0, routing.avgBaseflow) / routing.cellArea, \
+            # PCR-SUR: * secondsPerDay() converts avgBaseflow/cellArea from m/s to m/day, the unit of the two allocation terms
+            nonFossilGroundwaterSupply = pcr.max(pcr.max(0.0, routing.avgBaseflow) / routing.cellArea * vos.secondsPerDay(), \
                                                  groundwater.avgNonFossilAllocationShort, groundwater.avgNonFossilAllocation)  
             # - irrigation supply from the non fossil groundwater
             nonFossilIrrigationGroundwaterSupply  = nonFossilGroundwaterSupply * vos.getValDivZero(remainingIrrigationLivestock, remainingTotalDemand)
