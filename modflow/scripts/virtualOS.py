@@ -46,6 +46,30 @@ import pcraster as pcr
 import logging
 logger = logging.getLogger(__name__)
 
+# PCR-SUR: the "date ... is NOT available" warnings repeat for every file, every day of the run
+# (about 11 per simulated day, i.e. hundreds of thousands of lines over 1950-2025). This filter lets
+# the FIRST warning of each kind for each file/variable through as a WARNING, and demotes all repeats
+# to DEBUG, so they still appear in full in the .dbg log but no longer flood the console and .log file.
+class _OncePerSourceDateWarning(logging.Filter):
+    def __init__(self):
+        logging.Filter.__init__(self)
+        self.seen = set()
+    def filter(self, record):
+        if record.levelno == logging.WARNING:
+            msg = record.getMessage()
+            if "WARNING related to the netcdf file" in msg and "is NOT available" in msg:
+                source = [line for line in msg.splitlines() if line.strip()][0]
+                kind = "before" if "'before'" in msg else ("after" if "'after'" in msg else "substituted")
+                key = (source, kind)
+                if key in self.seen:
+                    record.levelno, record.levelname = logging.DEBUG, "DEBUG"
+                else:
+                    self.seen.add(key)
+                    record.msg = str(record.msg).rstrip("\n") + "\n(PCR-SUR: repeats of this warning for this file/variable are logged at DEBUG level only)\n"
+                    record.args = ()
+        return True
+logger.addFilter(_OncePerSourceDateWarning())
+
 # file cache to minimize/reduce opening/closing files.  
 filecache = dict()
 
