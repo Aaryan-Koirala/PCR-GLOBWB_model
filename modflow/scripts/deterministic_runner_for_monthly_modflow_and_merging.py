@@ -26,6 +26,7 @@ import os
 import sys
 import datetime
 import glob
+import shutil
 
 import pcraster as pcr
 from pcraster.framework import DynamicModel
@@ -118,10 +119,7 @@ class DeterministicRunner(DynamicModel):
                 # merging pcraster maps that are needed for MODFLOW calculation
                 msg = "Merging pcraster map files that are needed for the MODFLOW calculation."
                 logger.info(msg)
-                cmd = 'python '+ self.configuration.path_of_this_module + "/merge_pcraster_maps.py " + str(self.modelTime.fulldate) + " " +\
-                                                                                                       str(self.configuration.main_output_directory)+"/ maps 8 "+\
-                                                                                                       str("Global")
-                vos.cmd_line(cmd, using_subprocess = False)
+                self.merge_or_link_pcraster_maps("maps")
                 
                 # cleaning up unmerged files (not tested yet)
                 clean_up_pcraster_maps = False
@@ -143,10 +141,7 @@ class DeterministicRunner(DynamicModel):
 
             msg = "Merging pcraster map files belonging to initial conditions."
             logger.info(msg)
-            cmd = 'python '+ self.configuration.path_of_this_module + "/merge_pcraster_maps.py " + str(self.modelTime.fulldate) + " " +\
-                                                                                                   str(self.configuration.main_output_directory)+"/ states 8 "+\
-                                                                                                   str("Global")
-            vos.cmd_line(cmd, using_subprocess = False)
+            self.merge_or_link_pcraster_maps("states")
             
             # cleaning up unmerged files (not tested yet)
             clean_up_pcraster_maps = False
@@ -185,6 +180,36 @@ class DeterministicRunner(DynamicModel):
             if os.path.exists(filename): os.remove(filename)
             open(filename, "w").close()    
 
+
+    def merge_or_link_pcraster_maps(self, folder):
+        # PCR-SUR: a run with ONE regional clone (cloneAreas = a single code, not Global/part_one/part_two)
+        # needs no merging into a global grid. The clone's maps for this date are hard-linked (or copied,
+        # if the file system does not allow hard links) into global/<folder>/, where MODFLOW reads them.
+        # Other runs call merge_pcraster_maps.py exactly as before.
+        clone_areas = str(self.configuration.globalOptions['cloneAreas'])
+        if clone_areas not in ["Global", "part_one", "part_two"] and "," not in clone_areas:
+            source_dir = os.path.join(str(self.configuration.main_output_directory), clone_areas, folder)
+            target_dir = os.path.join(str(self.configuration.main_output_directory), "global", folder)
+            if not os.path.exists(target_dir): os.makedirs(target_dir)
+            files = glob.glob(os.path.join(source_dir, "*" + str(self.modelTime.fulldate) + "*.map"))
+            if len(files) == 0:
+                msg = "No " + folder + " files found in " + source_dir + " for " + str(self.modelTime.fulldate)
+                if folder == "maps":                      # MODFLOW needs these: stop with a clear message
+                    logger.error(msg)
+                    raise RuntimeError(msg)
+                logger.warning(msg)                         # states are only collected, not read by MODFLOW
+            for f in files:
+                target = os.path.join(target_dir, os.path.basename(f))
+                if os.path.exists(target): os.remove(target)
+                try:
+                    os.link(f, target)
+                except OSError:
+                    shutil.copy2(f, target)
+            logger.info("Linked %i %s file(s) of clone %s for %s.", len(files), folder, clone_areas, str(self.modelTime.fulldate))
+        else:
+            cmd = 'python '+ self.configuration.path_of_this_module + "/merge_pcraster_maps.py " + str(self.modelTime.fulldate) + " " +\
+                  str(self.configuration.main_output_directory)+"/ " + folder + " 8 " + str("Global")
+            vos.cmd_line(cmd, using_subprocess = False)
 
     def merging_netcdf_files(self, nc_report_type, start_date, end_date, max_number_of_cores = 20):
 
