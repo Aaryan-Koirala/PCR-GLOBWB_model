@@ -1609,6 +1609,15 @@ class Routing(object):
                             pcr.min(self.maxTimestepsToAvgDischargeLong, self.timestepsToAvgDischarge)
         self.avgDischarge = pcr.max(0.0, self.avgDischarge)                                    
         self.m2tDischarge = self.m2tDischarge + pcr.abs(deltaAnoDischarge*(dishargeUsed - self.avgDischarge))                             
+        # PCR-SUR: once the averaging window is full (timesteps > maxTimestepsToAvgDischargeLong = 1825 days), the mean
+        # above becomes a moving average over ~5 years, but m2tDischarge kept summing over the WHOLE run (carried across
+        # restarts), so the 'variance' m2t/(1825-1) grew without bound and the environmental flow always sat at its 10% floor.
+        # Decaying m2t by (1 - 1/N) each step turns it into the matching exponentially weighted variance (Finch 2009);
+        # it is identical to the original during the first 1825 days. Any excess carried in from old states decays
+        # with an e-folding time of ~5 years (i.e. it is gone after spin-up).
+        self.m2tDischarge = pcr.ifthenelse(self.timestepsToAvgDischarge > self.maxTimestepsToAvgDischargeLong, \
+                                           self.m2tDischarge * (1.0 - 1.0/self.maxTimestepsToAvgDischargeLong), \
+                                           self.m2tDischarge)
         #
         # - short term average disharge
         #
