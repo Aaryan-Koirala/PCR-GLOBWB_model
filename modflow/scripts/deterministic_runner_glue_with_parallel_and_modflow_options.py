@@ -282,23 +282,15 @@ class DeterministicRunner(DynamicModel):
                 modflow_is_ready = False
                 self.count_check = 0
                 while modflow_is_ready == False:
-                    time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
-                    if datetime.datetime.now().second == 14 or\
-                       datetime.datetime.now().second == 29 or\
-                       datetime.datetime.now().second == 34 or\
-                       datetime.datetime.now().second == 59:\
-                       modflow_is_ready = self.check_modflow_status()
+                    time.sleep(1.0)  # PCR-SUR: do not burn a full CPU core while waiting
+                    modflow_is_ready = self.check_modflow_status()  # PCR-SUR: poll every second, not only at clock seconds 14/29/34/49|59
                 
             # wait until merged files are ready
             merged_files_are_ready = False
+            self.count_check = 0  # PCR-SUR: reset once, not on every poll (else the debug log floods)
             while merged_files_are_ready == False:
-                time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
-                self.count_check = 0
-                if datetime.datetime.now().second == 14 or\
-                   datetime.datetime.now().second == 29 or\
-                   datetime.datetime.now().second == 34 or\
-                   datetime.datetime.now().second == 59:\
-                   merged_files_are_ready = self.check_merging_status()
+                time.sleep(1.0)  # PCR-SUR: do not burn a full CPU core while waiting
+                merged_files_are_ready = self.check_merging_status()  # PCR-SUR: poll every second, not only at clock seconds 14/29/34/49|59
 
     def check_modflow_status(self):
 

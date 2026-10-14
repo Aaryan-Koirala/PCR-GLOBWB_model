@@ -103,12 +103,8 @@ class DeterministicRunner(DynamicModel):
             pcrglobwb_is_ready = False
             self.count_check = 0
             while pcrglobwb_is_ready == False:
-                time.sleep(0.5)  # PCR-SUR: do not burn a full CPU core while waiting
-                if datetime.datetime.now().second == 14 or\
-                   datetime.datetime.now().second == 29 or\
-                   datetime.datetime.now().second == 34 or\
-                   datetime.datetime.now().second == 49:\
-                   pcrglobwb_is_ready = self.check_pcrglobwb_status()
+                time.sleep(1.0)  # PCR-SUR: do not burn a full CPU core while waiting
+                pcrglobwb_is_ready = self.check_pcrglobwb_status()  # PCR-SUR: poll every second, not only at clock seconds 14/29/34/49|59
                 
             # merging netcdf files at daily resolution
             start_date = '%04i-%02i-01' %(self.modelTime.year, self.modelTime.month)             # TODO: Make it flexible for a run starting not on the 1st January.
