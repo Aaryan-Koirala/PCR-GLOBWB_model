@@ -841,13 +841,14 @@ def readPCRmapClone(v,cloneMapFileName,tmpDir,absolutePath=None,isLddMap=False,c
         if sameClone == True:
             PCRmap = pcr.readmap(v)
         else:
-            # resample using GDAL:
-            output = tmpDir+'temp.map'
-            warp = gdalwarpPCR(v,output,cloneMapFileName,tmpDir,isLddMap,isNomMap)
-            # read from temporary file and delete the temporary file:
-            PCRmap = pcr.readmap(output)
+            # PCR-SUR: nearest-neighbour crop/resample in Python instead of GDAL. The GDAL route
+            # (gdalwarpPCR) fails silently with current GDAL ('-dstnodata mv' is rejected), after which
+            # 'mapattr -c' creates an empty map and every global .map input became a constant.
+            # Like the GDAL route, the result is scalar (then ldd/nominal below if requested).
+            warp = None
+            PCRmap = cropPCRmapToClone(v, cloneMapFileName)
             if isLddMap == True: PCRmap = pcr.ifthen(pcr.scalar(PCRmap) < 10., PCRmap)
-            if isLddMap == True: PCRmap = pcr.ldd(PCRmap)
+            if isLddMap == True: PCRmap = pcr.ldd(pcr.nominal(PCRmap))   # PCR-SUR: GDAL gave a nominal map here; ours is scalar
             if isNomMap == True: PCRmap = pcr.ifthen(pcr.scalar(PCRmap) >  0., PCRmap)
             if isNomMap == True: PCRmap = pcr.nominal(PCRmap)
             if os.path.isdir(tmpDir):
@@ -862,6 +863,30 @@ def readPCRmapClone(v,cloneMapFileName,tmpDir,absolutePath=None,isLddMap=False,c
     stdout = None; del stdout
     stderr = None; del stderr
     return PCRmap    
+
+def cropPCRmapToClone(inputMapFileName, cloneMapFileName):
+    # PCR-SUR: returns the input PCRaster map on the clone grid as a scalar field, by nearest neighbour
+    # on cell centres (same result as gdalwarp's default 'near'). Works for an input that is larger
+    # and/or coarser than the clone; stops with an error if the clone is not inside the input.
+    inp = getMapAttributesALL(inputMapFileName)
+    cln = getMapAttributesALL(cloneMapFileName)
+    if cln['cellsize'] > inp['cellsize'] * (1.0 + 1e-9):
+        msg = "cropPCRmapToClone: clone cells are larger than the cells of " + str(inputMapFileName) + " (not supported)."
+        logger.error(msg)
+        raise RuntimeError(msg)
+    lat = cln['yUL'] - (np.arange(int(cln['rows'])) + 0.5) * cln['cellsize']
+    lon = cln['xUL'] + (np.arange(int(cln['cols'])) + 0.5) * cln['cellsize']
+    rows = np.floor((inp['yUL'] - lat) / inp['cellsize'] + 1e-9).astype(int)
+    cols = np.floor((lon - inp['xUL']) / inp['cellsize'] + 1e-9).astype(int)
+    if rows.min() < 0 or cols.min() < 0 or rows.max() >= int(inp['rows']) or cols.max() >= int(inp['cols']):
+        msg = "cropPCRmapToClone: the clone extends beyond the map " + str(inputMapFileName)
+        logger.error(msg)
+        raise RuntimeError(msg)
+    MV = 1e20
+    pcr.setclone(inputMapFileName)
+    data = pcr.pcr2numpy(pcr.scalar(pcr.readmap(inputMapFileName)), MV)
+    pcr.setclone(cloneMapFileName)
+    return pcr.numpy2pcr(pcr.Scalar, data[np.ix_(rows, cols)], MV)
 
 def readPCRmap(v):
         # v : fileName or floating values
