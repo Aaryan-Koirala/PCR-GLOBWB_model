@@ -1605,6 +1605,11 @@ class LandCover(object):
         if self.name == 'irrPaddy' or self.name == 'irr_paddy': self.totalPotentialMaximumIrrGrossDemandPaddy = self.irrGrossDemand
         if self.name == 'irrNonPaddy' or self.name == 'irr_non_paddy' or self.name == 'irr_non_paddy_crops': self.totalPotentialMaximumIrrGrossDemandNonPaddy = self.irrGrossDemand
 
+        # PCR-SUR BUGFIX: work on a local copy. The dictionary is shared by all land cover types in a time step;
+        # masking it in place made non-irrigation demand zero for every later land cover wherever an earlier
+        # land cover (forest is processed first) has fracVegCover == 0.
+        nonIrrGrossDemandDict = dict(nonIrrGrossDemandDict)
+        nonIrrGrossDemandDict['potential_demand'] = dict(nonIrrGrossDemandDict['potential_demand'])
         # non irrigation demand is only calculated for areas with fracVegCover > 0                   # DO WE NEED THIS ?
         nonIrrGrossDemandDict['potential_demand']['domestic']  = pcr.ifthenelse(self.fracVegCover > 0.0, nonIrrGrossDemandDict['potential_demand']['domestic'] , 0.0) 
         nonIrrGrossDemandDict['potential_demand']['industry']  = pcr.ifthenelse(self.fracVegCover > 0.0, nonIrrGrossDemandDict['potential_demand']['industry'] , 0.0)
