@@ -36,6 +36,13 @@ class Meteo(object):
         self.preFileNC = iniItems.meteoOptions['precipitationNC']        # starting from 19 Feb 2014, we only support netcdf input files
         self.tmpFileNC = iniItems.meteoOptions['temperatureNC']
 
+        # PCR-SUR: netCDF variable names of the forcing, optional in the ini (same key names as model/meteo.py).
+        # Defaults are the names this code used before. Unit conversions below are unchanged:
+        # precipitation in kg m-2 s-1, temperature in K, reference potential ET in m/day.
+        self.preVarName      = iniItems.meteoOptions.get('precipitationVariableName', 'pr')
+        self.tmpVarName      = iniItems.meteoOptions.get('temperatureVariableName', 'tas')
+        self.refETPotVarName = iniItems.meteoOptions.get('referenceEPotVariableName', 'evapotranspiration')
+
         self.refETPotMethod = iniItems.meteoOptions['referenceETPotMethod']
         if self.refETPotMethod == 'Hamon': self.latitudes = \
                                            pcr.ycoordinate(self.cloneMap) # needed to calculate 'referenceETPot'
@@ -316,7 +323,7 @@ class Meteo(object):
         
         # reading precip when ISI-MIP is used
             precipitation = vos.netcdf2PCRobjClone(\
-                                      self.preFileNC, 'pr',\
+                                      self.preFileNC, self.preVarName,\
                                       str(currTimeStep.fulldate),
                                       useDoy = None,
                                       cloneMapFileName = self.cloneMap,\
@@ -346,7 +353,7 @@ class Meteo(object):
         else:
             # updated to temp when using ISI-MIP projection
             temperature = vos.netcdf2PCRobjClone(\
-                                 self.tmpFileNC,'tas',\
+                                 self.tmpFileNC, self.tmpVarName,\
                                  str(currTimeStep.fulldate), 
                                  useDoy = None,
                                  cloneMapFileName=self.cloneMap,\
@@ -374,7 +381,7 @@ class Meteo(object):
                                       LatitudeLongitude = True)
             else:
                 self.referencePotET = vos.netcdf2PCRobjClone(\
-                                      self.etpFileNC,'evapotranspiration',\
+                                      self.etpFileNC, self.refETPotVarName,\
                                       str(currTimeStep.fulldate), 
                                       useDoy = None,
                                       cloneMapFileName=self.cloneMap,\
