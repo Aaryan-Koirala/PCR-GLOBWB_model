@@ -543,7 +543,31 @@ class GroundwaterModflow(object):
         secondary = pcr.cover(pcr.min(0.005, self.specificYield) * self.cellAreaMap/(pcr.clone().cellSize()*pcr.clone().cellSize()), 0.0)    # dummy values if we use layer type 00
         secondary = pcr.max(1e-20, secondary)
 
-        self.pcr_modflow.setStorage(primary, secondary, 1)
+        # PCR-SUR Run C (gwMF E, GLOBGM as-is: model_tools_src/python/pcr-globwb/groundwater_MODFLOW.py:820-836):
+        # storage coefficient of the lower (aquifer) layer. Default: specific yield (as before). With the ini key
+        # 'aquiferLayerPrimaryStorageCoefficient' (GLOBGM: 0.003, based on de Graaf et al., 2017) it is used only below
+        # a confining layer (confiningLayerThickness > 0); elsewhere the specific yield is kept. Layer 2 is unchanged.
+        self.storage_coefficient_1 = self.specificYield
+        if "aquiferLayerPrimaryStorageCoefficient" in list(self.iniItems.modflowParameterOptions.keys()) and\
+            self.iniItems.modflowParameterOptions['aquiferLayerPrimaryStorageCoefficient'] != "Default":
+            # PCR-SUR: the fork defines confiningLayerThickness only with usePreDefinedConfiningLayer (GLOBGM always has it)
+            if not self.usePreDefinedConfiningLayer:
+                raise Exception("aquiferLayerPrimaryStorageCoefficient needs usePreDefinedConfiningLayer = True")
+            msg = "Set storage coefficient for the aquifer layer based on the input in 'aquiferLayerPrimaryStorageCoefficient'."
+            logger.info(msg)
+            aquiferLayerPrimaryStorageCoefficient = vos.readPCRmapClone(self.iniItems.modflowParameterOptions['aquiferLayerPrimaryStorageCoefficient'], \
+                                                                        self.cloneMap, self.tmpDir, self.inputDir)
+            msg = "Note that this is for the confined aquifer layer only (aquifer covered by the confining layer)'."
+            logger.info(msg)
+            # - only for cells below the confining layer
+            aquiferLayerPrimaryStorageCoefficient = pcr.ifthen(self.confiningLayerThickness > 0.0, aquiferLayerPrimaryStorageCoefficient)
+            # - cover the rest, using the default value
+            self.storage_coefficient_1 = pcr.cover(aquiferLayerPrimaryStorageCoefficient, self.storage_coefficient_1)
+        # - correction due to the usage of lat/lon coordinates (same as 'primary' above)
+        primary_1 = pcr.cover(self.storage_coefficient_1 * self.cellAreaMap/(pcr.clone().cellSize()*pcr.clone().cellSize()), 0.0)
+        primary_1 = pcr.max(1e-20, primary_1)
+
+        self.pcr_modflow.setStorage(primary_1, secondary, 1)
         self.pcr_modflow.setStorage(primary, secondary, 2)
 
         # specification for conductivities (BCF package)
@@ -552,8 +576,9 @@ class GroundwaterModflow(object):
         # layer 2 (upper layer) - horizontal conductivity
         horizontal_conductivity_layer_2 = pcr.max(self.minimumTransmissivity, \
                                           horizontal_conductivity * self.thickness_of_layer_2) / self.thickness_of_layer_2
+        # PCR-SUR Run C (gwMF A, GLOBGM as-is): cap the FLOORED value (the line used the raw k and discarded the floor)
         horizontal_conductivity_layer_2 = pcr.min(self.maximumTransmissivity, \
-                                          horizontal_conductivity * self.thickness_of_layer_2) / self.thickness_of_layer_2
+                                          horizontal_conductivity_layer_2 * self.thickness_of_layer_2) / self.thickness_of_layer_2
 
         # layer 2 (upper layer) - vertical conductivity
         # INGE: kh:kv = 1:0.1
@@ -576,8 +601,9 @@ class GroundwaterModflow(object):
         # layer 1 (lower layer)
         horizontal_conductivity_layer_1 = pcr.max(self.minimumTransmissivity, \
                                           horizontal_conductivity * self.thickness_of_layer_1) / self.thickness_of_layer_1
+        # PCR-SUR Run C (gwMF A, GLOBGM as-is): cap the FLOORED value (the line used the raw k and discarded the floor)
         horizontal_conductivity_layer_1 = pcr.min(self.maximumTransmissivity, \
-                                          horizontal_conductivity * self.thickness_of_layer_1) / self.thickness_of_layer_1
+                                          horizontal_conductivity_layer_1 * self.thickness_of_layer_1) / self.thickness_of_layer_1
 
         # ignoring the vertical conductivity in the lower layer 
         # such that the values of resistance (1/vcont) depend only on vertical_conductivity_layer_2 
@@ -612,7 +638,9 @@ class GroundwaterModflow(object):
         #~ self.specific_yield_2 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, 0.11, self.specificYield), self.specificYield)
         #~ self.specific_yield_1 = pcr.cover(pcr.ifthenelse(self.estimateConfinedLayers >0.0, self.specificYield * 3, self.specificYield), self.specificYield)
         self.specific_yield_2 = self.specificYield
-        self.specific_yield_1 = self.specificYield
+        # PCR-SUR Run C (gwMF E companion): layer 1 uses the same coefficient as MODFLOW (0.003 below a confining layer
+        # when 'aquiferLayerPrimaryStorageCoefficient' is set, specific yield elsewhere), so storage change = S x head change.
+        self.specific_yield_1 = self.storage_coefficient_1
         
     def get_initial_heads(self):
                 
@@ -1360,8 +1388,9 @@ class GroundwaterModflow(object):
             # set minimum conductance values (to remove water above surface level)
             # - assume all cells have minimum river width
             minimum_width = 2.0   # Sutanudjaja et al. (2011)
+            # PCR-SUR Run C (gwMF B, GLOBGM line as-is): no '/cellAreaMap' (it made the floor 1/day instead of m2/day, so it never bound)
             minimum_conductance = (1.0/self.bed_resistance) * \
-                                  pcr.max(minimum_width, self.bankfull_width) * self.channelLength/self.cellAreaMap
+                                  pcr.max(minimum_width, self.bankfull_width) * self.channelLength
             self.bed_conductance = pcr.max(minimum_conductance, self.bed_conductance)
 
             logger.info("Estimating outlet widths of lakes and/or reservoirs.")
@@ -1574,7 +1603,12 @@ class GroundwaterModflow(object):
         #~ self.pcr_modflow.setDrain(drain_elevation, drain_conductance, self.number_of_layers)
 
         # set the DRN package only to both layers ------ 4 January 2016: I think that we should use this as we want all recharge will be released as baseflow.
-        self.pcr_modflow.setDrain(drain_elevation, drain_conductance, 1)
+        # PCR-SUR Run C (gwMF D, ledger v6 #1): both layers only where a confining layer exists (developer-intended, kept);
+        # unconfined cells get one drain on the top layer (layer 2), as one linear reservoir J*Sy (de Graaf 2017 eq. 3-4).
+        drain_conductance_layer_1 = drain_conductance
+        if self.usePreDefinedConfiningLayer:
+            drain_conductance_layer_1 = pcr.cover(pcr.ifthenelse(self.confiningLayerThickness > 0.0, drain_conductance, 0.0), 0.0)
+        self.pcr_modflow.setDrain(drain_elevation, drain_conductance_layer_1, 1)
         self.pcr_modflow.setDrain(drain_elevation, drain_conductance, 2)
 
         #~ # set the DRN package only to the lowermost layer
