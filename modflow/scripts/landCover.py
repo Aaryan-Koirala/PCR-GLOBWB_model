@@ -1525,30 +1525,19 @@ class LandCover(object):
             # alternative 2: irrigation demand (to fill the entire totAvlWater, maintaining the field capacity, 
             #                                   but with the correction of totAvlWater based on the rooting depth)
             # - as the proxy of rooting depth, we use crop coefficient 
+            # - Run C (F16-S8): irrigate when the usable water left falls below (1 - p) x TAW (FAO-56 ch. 8: p is the
+            #   fraction of TAW that may be DEPLETED; readAvlWater is the water REMAINING), not below p x TAW
             self.irrigation_factor = pcr.ifthenelse(self.cropKC > 0.0,\
                                        pcr.min(1.0, self.cropKC / 1.0), 0.0)
             self.irrGrossDemand = \
                  pcr.ifthenelse( self.cropKC > 0.20, \
                  pcr.ifthenelse( self.readAvlWater < \
-                                 adjDeplFactor*self.irrigation_factor*self.totAvlWater, \
+                                 (1.0 - adjDeplFactor)*self.irrigation_factor*self.totAvlWater, \
                  pcr.max(0.0, self.totAvlWater*self.irrigation_factor-self.readAvlWater),0.),0.)
 
-            # irrigation demand is implemented only if there is deficit in transpiration and/or evaporation
-            deficit_factor = 1.00
-            evaporationDeficit   = pcr.max(0.0, (self.potBareSoilEvap  + self.potTranspiration)*deficit_factor -\
-                                   self.estimateTranspirationAndBareSoilEvap(returnTotalEstimation = True))
-            transpirationDeficit = pcr.max(0.0, 
-                                   self.potTranspiration*deficit_factor -\
-                                   self.estimateTranspirationAndBareSoilEvap(returnTotalEstimation = True, returnTotalTranspirationOnly = True))
-            deficit = pcr.max(evaporationDeficit, transpirationDeficit)
-            #
-            # treshold to initiate irrigation
-            deficit_treshold = 0.20 * self.totalPotET
-            need_irrigation = pcr.ifthenelse(deficit > deficit_treshold, pcr.boolean(1),\
-                              pcr.ifthenelse(self.soilWaterStorage == 0.000, pcr.boolean(1), pcr.boolean(0)))
-            need_irrigation = pcr.cover(need_irrigation, pcr.boolean(0.0))
-            #
-            self.irrGrossDemand = pcr.ifthenelse(need_irrigation, self.irrGrossDemand, 0.0)
+            # - Run C (F16-S7): the depletion test above decides alone. The removed second gate (transpiration/evaporation
+            #   shortfall > 20 % of potential ET, or soil storage exactly 0) was dead: its preview runs without stress in
+            #   irrigated covers, so the shortfall is always 0 and irrigation fired only when the whole soil was empty.
 
             # demand is limited by potential evaporation for the next coming days
             # - objective: to avoid too high and unrealistic demand 
@@ -1557,10 +1546,12 @@ class LandCover(object):
             irrigation_interval = pcr.min(max_irrigation_interval, \
                                   pcr.max(min_irrigation_interval, \
                                   pcr.ifthenelse(self.totalPotET > 0.0, \
-                                  pcr.roundup((self.irrGrossDemand + pcr.max(self.readAvlWater, self.soilWaterStorage))/ self.totalPotET), 1.0)))
+                                  pcr.roundup((self.irrGrossDemand + self.readAvlWater)/ self.totalPotET), 1.0)))
             # - irrigation demand - limited by potential evaporation for the next coming days
+            # - Run C (F16-S9): the cap subtracts the usable water (readAvlWater) only; max(readAvlWater, soilWaterStorage)
+            #   always equalled the total storage, incl. water below wilting point and below the roots
             self.irrGrossDemand = pcr.min(pcr.max(0.0,\
-                                          self.totalPotET * irrigation_interval - pcr.max(self.readAvlWater, self.soilWaterStorage)),\
+                                          self.totalPotET * irrigation_interval - self.readAvlWater),\
                                           self.irrGrossDemand)
 
             # assume that smart farmers do not irrigate higher than infiltration capacities
@@ -2387,9 +2378,16 @@ class LandCover(object):
 
     def calculateOpenWaterEvap(self):
 
+        # Run C (F14, loss path): the irrigation loss is charged once per delivery: the field receives e x gross and
+        # (1 - e) x gross goes to groundwater recharge the same day (added to gwRecharge in updateSoilStates).
+        # irrGrossDemand stays the gross amount delivered (= withdrawal, reported as before).
+        self.irrigationLossToGroundwater = pcr.spatial(pcr.scalar(0.0))
+        if self.name.startswith('irr') and self.includeIrrigation:
+            self.irrigationLossToGroundwater = (1.0 - self.irrigationEfficiencyUsed) * self.irrGrossDemand
+
         # update topWaterLayer (above soil) 
-        # - with netLqWaterToSoil and irrGrossDemand
-        self.topWaterLayer += pcr.max(0.,self.netLqWaterToSoil + self.irrGrossDemand)
+        # - with netLqWaterToSoil and irrGrossDemand (net of the loss)
+        self.topWaterLayer += pcr.max(0.,self.netLqWaterToSoil + self.irrGrossDemand - self.irrigationLossToGroundwater)
 
         # potential evaporation for openWaterEvap
         remainingPotETP = self.potBareSoilEvap + self.potTranspiration   # Edwin's principle: LIMIT = self.potBareSoilEvap +self.potTranspiration 
@@ -2426,7 +2424,9 @@ class LandCover(object):
 
         # for paddy, infiltration should consider percolation losses 
         if (self.name == 'irrPaddy' or self.name == "irr_paddy") and self.includeIrrigation:
-            infiltration_loss = pcr.max(self.design_percolation_loss, 
+            # - Run C (F14-S1): pcr.max -> pcr.min; the design percolation loss is the MAXIMUM loss (see the comment at
+            #   the end of estimate_paddy_infiltration_loss); max() drained 43 % of the pond per day at e = 0.70
+            infiltration_loss = pcr.min(self.design_percolation_loss,
                                 ((1./self.irrigationEfficiencyUsed) - 1.) * self.topWaterLayer)
             self.infiltration = pcr.min(infiltration_loss, self.infiltration)
 
@@ -2872,23 +2872,9 @@ class LandCover(object):
                 #~ self.percLow030150 = pcr.ifthenelse(self.cropKC > startingKC, deep_percolation_loss, \
                                      #~ pcr.ifthenelse(self.cropKC < self.prevCropKC, self.percLow030150, deep_percolation_loss))
 
-        # idea on 16 June 2015
-        # deep percolation should consider irrigation application losses 
-        if self.name.startswith('irr'):
-            
-            startingKC = 0.20   # starting crop coefficient indicate the growing season
-            
-            if self.numberOfLayers == 2:
-                deep_percolation_loss = self.percLow
-                deep_percolation_loss = pcr.max(deep_percolation_loss, \
-                                        pcr.max(0.0, self.storLow) * ((1./self.irrigationEfficiencyUsed) - 1.))
-                self.percLow = pcr.ifthenelse(self.cropKC > startingKC, deep_percolation_loss, self.percLow)
-            
-            if self.numberOfLayers == 3:
-                deep_percolation_loss = self.percLow030150
-                deep_percolation_loss = pcr.max(deep_percolation_loss, \
-                                        pcr.max(0.0, self.storLow030150) * ((1./self.irrigationEfficiencyUsed) - 1.))
-                self.percLow030150 = pcr.ifthenelse(self.cropKC > startingKC, deep_percolation_loss, self.percLow030150)
+        # idea on 16 June 2015 - REMOVED in Run C (F14-S2): the lower layer of both irrigated covers was drained by
+        # (1/e - 1) x storLow on every in-season day (cropKC > 0.20), irrigated or not and even below field capacity.
+        # The application loss is now charged once per delivery (calculateOpenWaterEvap -> gwRecharge).
 
 
         # idea on 24 June 2015
@@ -3386,6 +3372,8 @@ class LandCover(object):
 
             # groundwater recharge (positive indicating downward direction)
             self.gwRecharge = self.percLow - self.capRiseLow
+            # - Run C (F14, loss path): plus the irrigation application loss of the day (bypasses the soil)
+            self.gwRecharge = self.gwRecharge + self.irrigationLossToGroundwater
         
             # the following variables introduced for the comparison with threeLayer model output                        
             self.storUppTotal       = self.storUpp
@@ -3531,6 +3519,8 @@ class LandCover(object):
 
             # groundwater recharge
             self.gwRecharge = self.percLow030150 - self.capRiseLow030150
+            # - Run C (F14, loss path): plus the irrigation application loss of the day (bypasses the soil)
+            self.gwRecharge = self.gwRecharge + self.irrigationLossToGroundwater
         
             # the following variables introduced for the comparison with twoLayer model output                        
             self.storUppTotal       = self.storUpp000005 + self.storUpp005030
@@ -3617,7 +3607,8 @@ class LandCover(object):
                                    self.satExcess     ],\
                                   [self.directRunoff   ,\
                                    self.openWaterEvap  ,\
-                                   self.infiltration]  ,\
+                                   self.infiltration   ,\
+                                   self.irrigationLossToGroundwater],\
                                   [  preTopWaterLayer ],\
                                   [self.topWaterLayer ] ,\
                                        'topWaterLayer',True,\
@@ -3639,7 +3630,7 @@ class LandCover(object):
                 # 
                 vos.waterBalanceCheck([self.percUpp],\
                                       [self.actTranspiLow,
-                                       self.gwRecharge,
+                                       self.gwRecharge - self.irrigationLossToGroundwater,
                                        self.interflow,
                                        self.capRiseUpp],\
                                       [  preStorLow],\
@@ -3673,7 +3664,8 @@ class LandCover(object):
                                        self.actTranspiUpp,
                                        self.actTranspiLow,
                                        self.actBareSoilEvap,
-                                       self.openWaterEvap],\
+                                       self.openWaterEvap,
+                                       self.irrigationLossToGroundwater],\
                                       [  preTopWaterLayer,
                                          preStorUpp,
                                          preStorLow],\
@@ -3710,7 +3702,7 @@ class LandCover(object):
                 #
                 vos.waterBalanceCheck([self.percUpp005030],\
                                       [self.actTranspiLow030150,
-                                       self.gwRecharge,
+                                       self.gwRecharge - self.irrigationLossToGroundwater,
                                        self.interflow,
                                        self.capRiseUpp005030],\
                                       [  preStorLow030150],\
@@ -3748,7 +3740,8 @@ class LandCover(object):
                                        self.actTranspiUpp005030,
                                        self.actTranspiLow030150,
                                    self.actBareSoilEvap,
-                                   self.openWaterEvap],\
+                                   self.openWaterEvap,
+                                   self.irrigationLossToGroundwater],\
                                   [  preTopWaterLayer,
                                      preStorUpp000005,
                                      preStorUpp005030,
