@@ -56,8 +56,14 @@ if generalConfiguration.globalOptions['cloneAreas'] == "part_one" or\
    generalConfiguration.globalOptions['cloneAreas'] == "part_two":
     clean_previous_output = False
 
-# clean any files exists on the ouput directory (this can be done for global runs)
-if clean_previous_output and os.path.exists(generalConfiguration.globalOptions['outputDir']): shutil.rmtree(generalConfiguration.globalOptions['outputDir'])
+# Run C (launcher guard, ledger v8 P8): the original line deleted the whole outputDir here (shutil.rmtree), so one
+# mis-typed relaunch could delete a finished run. Now the launcher refuses to start if outputDir exists and is not
+# empty. Use a fresh outputDir for every launch, or delete the old folder by hand first (no override switch on purpose).
+if clean_previous_output and os.path.isdir(generalConfiguration.globalOptions['outputDir']) and \
+   len(os.listdir(generalConfiguration.globalOptions['outputDir'])) > 0:
+    print("REFUSED: outputDir " + generalConfiguration.globalOptions['outputDir'] + " exists and is not empty. " +\
+          "Nothing was deleted. Use a new outputDir in the ini, or delete the old folder by hand first.")
+    sys.exit(1)
 
 # make log folder and initialize logging
 generalOutputFolder = generalConfiguration.globalOptions['outputDir']

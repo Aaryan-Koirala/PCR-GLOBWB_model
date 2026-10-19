@@ -403,4 +403,5 @@ class SoilAndTopoParameters(object):
                      (self.slopeLength * (1.-self.effSatAtFieldCapLow030150) * \
              (self.satVolMoistContLow030150 - self.resVolMoistContLow030150))
         
-        self.interflowConcTime = pcr.max(0.0, pcr.cover(self.interflowConcTime, 0.0))     
+        # Run C (S4): k is the weight of an explicit linear-reservoir step and is only valid in [0, 1]; k > 1 over-released interflow
+        self.interflowConcTime = pcr.min(1.0, pcr.max(0.0, pcr.cover(self.interflowConcTime, 0.0)))

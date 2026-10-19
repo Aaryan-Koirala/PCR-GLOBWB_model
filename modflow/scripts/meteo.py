@@ -329,9 +329,9 @@ class Meteo(object):
                                       useDoy = None,
                                       cloneMapFileName = self.cloneMap,\
                                       LatitudeLongitude = True)
-                # unit original km m-2 s-1 to m d-1
-                # soortelijk gewicht water = 998 km/m3
-        self.precipitation = (precipitation/ 998.0) * (60. * 60. * 24)
+                # unit original kg m-2 s-1 to m d-1
+                # Run C (F23): 1 kg m-2 = 1 mm of water (density 1000 kg m-3, CF/ECMWF convention); was 998 (model precipitation x1.002 of the file)
+        self.precipitation = (precipitation/ 1000.0) * (60. * 60. * 24)
         
         precipitationCorrectionFactor = pcr.scalar(1.0)                 # Since 19 Feb 2014, Edwin removed the support for correcting precipitation. 
         self.precipitation = pcr.max(0.,self.precipitation*\
@@ -400,6 +400,8 @@ class Meteo(object):
         
         # make sure precipitation is always positive:
         self.precipitation = pcr.max(0.0, self.precipitation)
+        # Run C (GLOBGM meteo.py:500): make sure referencePotET is always positive too (after downscaling/smoothing, as in GLOBGM)
+        self.referencePotET = pcr.max(0.0, self.referencePotET)
 
         # rounding temperature values to minimize numerical errors (note only to minimize, not remove)
         self.temperature   = pcr.roundoff(self.temperature*1000.)/1000. 

@@ -507,7 +507,7 @@ class LandCover(object):
             min_percolation_loss = vos.readPCRmapClone(iniPaddyOptions['minPercolationLoss'], self.cloneMap, 	
                                                        self.tmpDir, self.inputDir)
         if 'maxPercolationLoss' in list(iniPaddyOptions.keys()) and iniPaddyOptions['maxPercolationLoss'] != "None":
-            min_percolation_loss = vos.readPCRmapClone(iniPaddyOptions['maxPercolationLoss'], self.cloneMap, 	
+            max_percolation_loss = vos.readPCRmapClone(iniPaddyOptions['maxPercolationLoss'], self.cloneMap, 	
                                                        self.tmpDir, self.inputDir)
         # - percolation loss at paddy fields (m/day)
         design_percolation_loss = pcr.max(min_percolation_loss, \
@@ -2245,8 +2245,8 @@ class LandCover(object):
         self.nonIrrReturnFlow = nonIrrGrossDemandDict['return_flow_fraction']['domestic'] * self.domesticWaterWithdrawal +\
                                 nonIrrGrossDemandDict['return_flow_fraction']['industry'] * self.industryWaterWithdrawal +\
                                 nonIrrGrossDemandDict['return_flow_fraction']['livestock']* self.livestockWaterWithdrawal
-        # - ignore very small return flow (less than 0.1 mm)
-        self.nonIrrReturnFlow = pcr.rounddown(self.nonIrrReturnFlow * 10000.)/10000.
+        # - Run C (F21): the rounddown of return flow below 0.1 mm/day was removed; at 5 arcmin it discarded ~2/3 of all
+        #   non-irrigation return flow (the cut part silently became consumption)
         self.nonIrrReturnFlow = pcr.min(self.nonIrrReturnFlow, self.nonIrrGrossDemand)                        
 
         if self.debugWaterBalance:
