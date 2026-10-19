@@ -153,19 +153,9 @@ class LandSurface(object):
                           'irrGrossDemand',
                           'nonIrrGrossDemand',
                           'totalPotentialGrossDemand',
-                          'actSurfaceWaterAbstract',
-                          'allocSurfaceWaterAbstract',
-                          'desalinationAbstraction',
-                          'desalinationAllocation',
-                          'nonFossilGroundwaterAbs',
-                          'allocNonFossilGroundwater',
-                          'fossilGroundwaterAbstr',
-                          'fossilGroundwaterAlloc',
                           'landSurfaceRunoff',
                           'satExcess',
                           'snowMelt',
-                          'totalGroundwaterAbstraction',
-                          'totalGroundwaterAllocation',
                           'totalPotentialMaximumGrossDemand',
                           'totalPotentialMaximumIrrGrossDemand',
                           'totalPotentialMaximumIrrGrossDemandPaddy',
@@ -177,6 +167,11 @@ class LandSurface(object):
                           'industryWaterWithdrawal',
                           'livestockWaterWithdrawal',
                           'nonIrrReturnFlow',
+                          # Run C (F12/W1): the source-side variables actSurfaceWaterAbstract, allocSurfaceWaterAbstract,
+                          #   desalinationAbstraction/Allocation, nonFossilGroundwaterAbs, allocNonFossilGroundwater,
+                          #   fossilGroundwaterAbstr/Alloc and totalGroundwaterAbstraction/Allocation are NOT aggregated
+                          #   from the land covers any more: allocateWaterDemand sets them once per cell (abstraction is
+                          #   never re-weighted by cover fractions).
                           'irrigationTranspirationDeficit']
         #
         # specific variables for 2 and 3 layer soil models:
@@ -198,12 +193,19 @@ class LandSurface(object):
         if self.numberOfSoilLayers == 2: self.aggrVars += ['satDegUpp','satDegLow']
         if self.numberOfSoilLayers == 3: self.aggrVars += ['satDegUpp000005','satDegUpp005030','satDegLow030150']
 
-        self.debugWaterBalance = iniItems.landSurfaceOptions['debugWaterBalance']
+        self.debugWaterBalance = True
+        if iniItems.landSurfaceOptions['debugWaterBalance'] == "False": self.debugWaterBalance = False
+        # Run C (F12/W1): a boolean (the ini string was never read here before; allocateWaterDemand reads it)
         # TDOD: Perform water balance checks for aggregates values (from values of each land cover type).   
         
         # limitAbstraction
         self.limitAbstraction = False
         if iniItems.landSurfaceOptions['limitAbstraction'] == "True": self.limitAbstraction = True
+        # if using MODFLOW, limitAbstraction must be True (the abstraction cannot exceed storGroundwater) - as in landCover.py
+        if "useMODFLOW" in list(iniItems.groundwaterOptions.keys()):
+            if iniItems.groundwaterOptions["useMODFLOW"] == "True": self.limitAbstraction = True
+        # surface water is not the first/top priority (as in landCover.py; the option is not configurable)
+        self.surfaceWaterPiority = False
 
         # landCover types included in the simulation: 
         self.coverTypes = ["forest","grassland"]
@@ -1325,22 +1327,30 @@ class LandSurface(object):
                      vos.netcdf2PCRobjClone(self.desalinationWaterFile,'desalination_water_use',\
                          currTimeStep.fulldate, useDoy = 'monthly', cloneMapFileName = self.cloneMap), 0.0))
                 self.desalinationWaterUse = pcr.max(0.0, desalinationWaterUse)
+                # Run C (E1): remember whether this month's map is zero everywhere (the desalination pooling is skipped then)
+                self.desalinationWaterUseIsZero = pcr.cellvalue(pcr.mapmaximum(self.desalinationWaterUse), 1)[0] <= 0.0
         else:    
             logger.debug("Monthly desalination water use is NOT included.")
             self.desalinationWaterUse = pcr.scalar(0.0)
+            self.desalinationWaterUseIsZero = True
         
-        # update (loop per each land cover type):
+        # Run C (F12/W1): the land-cover update runs in two passes around ONE water allocation per cell (allocateWaterDemand),
+        #   instead of one allocation per land cover with its full-cell demand followed by fraction weighting (W1).
+        # - pass 1: the fluxes that do not depend on the allocation, and the water demand of every land cover
         for coverType in self.coverTypes:
-            
             logger.info("Updating land cover: "+str(coverType))
-            self.landCoverObj[coverType].updateLC(meteo,groundwater,routing,\
-                                                  self.capRiseFrac,\
-                                                  self.nonIrrigationWaterDemandDict,\
-                                                  self.swAbstractionFractionDict,\
-                                                  currTimeStep,\
-                                                  self.allocSegments,\
-                                                  self.desalinationWaterUse,\
-                                                  self.groundwater_pumping_region_ids,self.regionalAnnualGroundwaterAbstractionLimit)
+            self.landCoverObj[coverType].updateLC(meteo, self.nonIrrigationWaterDemandDict, currTimeStep)
+
+        # - one cell demand, source split, regional trim, one pooling per source per zone, regional counter (steps 1-4 and 6)
+        self.allocateWaterDemand(groundwater, routing, currTimeStep)
+
+        # - pass 2: every land cover receives its share of the allocation (step 5) and continues with its soil column
+        for coverType in self.coverTypes:
+            logger.debug("Applying the allocated water to land cover: "+str(coverType))
+            self.landCoverObj[coverType].updateLCAfterAllocation(meteo, groundwater, routing,\
+                                                                 self.capRiseFrac,\
+                                                                 self,\
+                                                                 currTimeStep)
             
         # first, we set all aggregated values/variables to zero: 
         for var in self.aggrVars: vars(self)[var] = pcr.scalar(0.0)
@@ -1351,6 +1361,17 @@ class LandSurface(object):
             for var in self.aggrVars:
                 vars(self)[var] += \
                      self.landCoverObj[coverType].fracVegCover * vars(self.landCoverObj[coverType])[var]
+
+        if self.debugWaterBalance:
+            # Run C (F12/W1): invariant I3 - the fraction-weighted sums over the land covers equal the cell-level allocation
+            #   (one check per variable, so that errors of different sectors cannot cancel)
+            for var in ['irrGrossDemand', 'totalPotentialGrossDemand', 'nonIrrReturnFlow']:
+                vos.waterBalanceCheck([vars(self)[var]],\
+                                      [self.cellDelivered[var]],\
+                                      [pcr.scalar(0.0)],\
+                                      [pcr.scalar(0.0)],\
+                                      'F12 hand-back to the land covers (I3): ' + var, True,\
+                                       currTimeStep.fulldate, threshold=1e-5)
                      
         # total storages (unit: m3) in the entire landSurface module
         if self.numberOfSoilLayers == 2: self.totalSto = \
@@ -1367,6 +1388,831 @@ class LandSurface(object):
 
         # old-style reporting (this is useful for debugging)                            
         self.old_style_land_surface_reporting(currTimeStep)
+
+    def allocateWaterDemand(self, groundwater, routing, currTimeStep):
+        # Run C (F12/W1): ONE water demand allocation per cell (audit_landCover_wateruse_findings.md, addendum 2026-10-18).
+        #   Before: each land cover pooled its FULL-CELL demand over the 30' zone (vos.waterAbstractionAndAllocation) and
+        #   landSurface multiplied abstraction and allocation by the cover fraction of each cell afterwards, so water was
+        #   created or destroyed at the zone scale (zone ratios delivered/abstracted 0.31-42). Now:
+        #   step 1  one cell demand per sector = Sigma over land covers of fracVegCover x cover demand (fractions enter
+        #           here and nowhere else before step 5);
+        #   steps 2-4, 6  the allocation code of landCover.calculateWaterDemand (746f7631 l.1631-2390), moved VERBATIM
+        #           (incl. the G4 GLOBGM W2/W3 block, the F03-reverted regional cap line and the F15 counter): source
+        #           split, one regional trim per region (I1), one pooling per source per zone (I2: the pooling's own
+        #           zone check), counter from delivered groundwater (I4); the fossil part is inert under MODFLOW;
+        #   step 5  landCover.receiveAllocatedWater hands the delivered water back to the covers by demand share (I3).
+        #   Only edits inside the moved text: the per-cover paddy/non-paddy lines and reducedCapRise moved to
+        #   receiveAllocatedWater; the E1 desalination guard. Names used by the moved text:
+        nonIrrGrossDemandDict                     = self.nonIrrigationWaterDemandDict
+        swAbstractionFractionDict                 = self.swAbstractionFractionDict
+        allocSegments                             = self.allocSegments
+        desalinationWaterUse                      = self.desalinationWaterUse
+        groundwater_pumping_region_ids            = self.groundwater_pumping_region_ids
+        regionalAnnualGroundwaterAbstractionLimit = self.regionalAnnualGroundwaterAbstractionLimit
+
+        # step 1: one cell demand per sector (unit: m/day per cell area) = Sigma over land covers of fracVegCover x cover demand
+        # - the per-cover demands are the totalPotentialMaximum* attributes set in landCover.calculateWaterDemand
+        self.cellDemand = {}
+        for sector, attribute in [('irrigation', 'totalPotentialMaximumIrrGrossDemand'),\
+                                  ('domestic'  , 'totalPotentialMaximumDomesticDemand'),\
+                                  ('industry'  , 'totalPotentialMaximumIndustryDemand'),\
+                                  ('livestock' , 'totalPotentialMaximumLivestockDemand')]:
+            self.cellDemand[sector] = pcr.scalar(0.0)
+            for coverType in self.coverTypes:
+                self.cellDemand[sector] += self.landCoverObj[coverType].fracVegCover * vars(self.landCoverObj[coverType])[attribute]
+            self.cellDemand[sector] = pcr.ifthen(self.landmask, pcr.cover(self.cellDemand[sector], 0.0))
+        self.cellDemand['non_irrigation'] = self.cellDemand['domestic'] + self.cellDemand['industry'] + self.cellDemand['livestock']
+        # - the dictionary read by the moved text below holds the cell-level sector demands (return-flow fractions unchanged)
+        nonIrrGrossDemandDict = {'potential_demand'   : {'domestic' : self.cellDemand['domestic'],\
+                                                         'industry' : self.cellDemand['industry'],\
+                                                         'livestock': self.cellDemand['livestock']},\
+                                 'return_flow_fraction': nonIrrGrossDemandDict['return_flow_fraction']}
+        # - irrigation water demand of the cell (unit: m/day per cell area)
+        self.irrGrossDemand = self.cellDemand['irrigation']
+        # non irrigation water demand, including the livestock (not limited by available water)
+        self.nonIrrGrossDemand = nonIrrGrossDemandDict['potential_demand']['domestic'] +\
+                                 nonIrrGrossDemandDict['potential_demand']['industry'] +\
+                                 nonIrrGrossDemandDict['potential_demand']['livestock']
+                                 
+        # total irrigation and livestock demand (not limited by available water)
+        totalIrrigationLivestockDemand = self.irrGrossDemand + nonIrrGrossDemandDict['potential_demand']['livestock']
+        
+        # totalGrossDemand (m): irrigation and non irrigation (not limited by available water) - these values will not be reduced
+        self.totalPotentialMaximumGrossDemand       = self.irrGrossDemand + self.nonIrrGrossDemand
+        # - irrigation (excluding livestock)
+        self.totalPotentialMaximumIrrGrossDemand    = self.irrGrossDemand                         
+        # - non irrigation (including livestock)
+        self.totalPotentialMaximumNonIrrGrossDemand = self.nonIrrGrossDemand
+        # - domestic, industrial and livestock
+        self.totalPotentialMaximumDomesticDemand  = nonIrrGrossDemandDict['potential_demand']['domestic'] 
+        self.totalPotentialMaximumIndustryDemand  = nonIrrGrossDemandDict['potential_demand']['industry'] 
+        self.totalPotentialMaximumLivestockDemand = nonIrrGrossDemandDict['potential_demand']['livestock']
+        
+        # the following value will be reduced by available/accesible water
+        self.totalPotentialGrossDemand           = self.totalPotentialMaximumGrossDemand         
+
+        # Abstraction and Allocation of DESALINATED WATER
+        # ##################################################################################################################
+        # - desalination water to satisfy water demand
+        if self.usingAllocSegments and not self.desalinationWaterUseIsZero: # using zone/segments at which networks are defined (as defined in the landSurface options)
+        # - Run C (E1): skipped while the month's desalination map is zero everywhere (the local branch below then gives
+        #   exactly the zeros the pooling would return)
+        #  
+            logger.debug("Allocation of supply from desalination water.")
+        #  
+            volDesalinationAbstraction, volDesalinationAllocation = \
+              vos.waterAbstractionAndAllocation(
+              water_demand_volume = self.totalPotentialGrossDemand*routing.cellArea,\
+              available_water_volume = pcr.max(0.00, desalinationWaterUse*routing.cellArea),\
+              allocation_zones = allocSegments,\
+              zone_area = self.segmentArea,\
+              high_volume_treshold = 1000000.,\
+              debug_water_balance = True,\
+              extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+        #     
+            self.desalinationAbstraction = volDesalinationAbstraction / routing.cellArea
+            self.desalinationAllocation  = volDesalinationAllocation  / routing.cellArea
+        #     
+        else: 
+        #     
+            logger.debug("Supply from desalination water is only for satisfying local demand (no network).")
+            self.desalinationAbstraction = pcr.min(desalinationWaterUse, self.totalPotentialGrossDemand)
+            self.desalinationAllocation  = self.desalinationAbstraction
+        #     
+        self.desalinationAbstraction = pcr.ifthen(self.landmask, self.desalinationAbstraction)
+        self.desalinationAllocation  = pcr.ifthen(self.landmask, self.desalinationAllocation)
+        # ##################################################################################################################
+        # - end of Abstraction and Allocation of DESALINATED WATER
+
+
+        # water demand that have been satisfied (unit: m/day) - after desalination
+        ################################################################################################################################
+        # - for irrigation (excluding livestock)
+        satisfiedIrrigationDemand = vos.getValDivZero(self.irrGrossDemand, self.totalPotentialGrossDemand) * self.desalinationAllocation
+        # - for domestic, industry and livestock
+        satisfiedNonIrrDemand     = pcr.max(0.00, self.desalinationAllocation - satisfiedIrrigationDemand)
+        # - for domestic
+        satisfiedDomesticDemand   = satisfiedNonIrrDemand * vos.getValDivZero(nonIrrGrossDemandDict['potential_demand']['domestic'], 
+                                                                              self.totalPotentialMaximumNonIrrGrossDemand)  
+        # - for industry
+        satisfiedIndustryDemand   = satisfiedNonIrrDemand * vos.getValDivZero(nonIrrGrossDemandDict['potential_demand']['industry'], 
+                                                                              self.totalPotentialMaximumNonIrrGrossDemand)
+        # - for livestock                                                                      
+        satisfiedLivestockDemand  = pcr.max(0.0, satisfiedNonIrrDemand - satisfiedDomesticDemand - satisfiedIndustryDemand)
+
+
+        # total remaining gross demand (m/day) after desalination
+        ################################################################################################################################
+        self.totalGrossDemandAfterDesalination = pcr.max(0.0, self.totalPotentialGrossDemand - self.desalinationAllocation)
+        # the remaining water demand per sector
+        # - for domestic 
+        remainingDomestic   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['domestic']  - satisfiedDomesticDemand)
+        # - for industry 
+        remainingIndustry   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['industry']  - satisfiedIndustryDemand)
+        # - for livestock 
+        remainingLivestock  = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['livestock'] - satisfiedLivestockDemand)
+        # - for irrigation (excluding livestock)
+        remainingIrrigation = pcr.max(0.0, self.irrGrossDemand - satisfiedIrrigationDemand) 
+        # - total for livestock and irrigation
+        remainingIrrigationLivestock = remainingIrrigation + remainingLivestock
+        # - total for industrial and domestic (excluding livestock)
+        remainingIndustrialDomestic  = pcr.max(0.0, self.totalGrossDemandAfterDesalination - remainingIrrigationLivestock)                                                     
+
+
+        # Run C (W2/W3): GLOBGM's rewritten surface-water demand block, taken as-is (UU-Hydro/GLOBGM
+        #   model_tools_src/python/pcr-globwb/landCover.py l.1850-1982): non-productive override switched off (W2),
+        #   proportional industry-domestic vs irrigation-livestock split (W3), over-estimation feedback from the 7-day
+        #   mean only. Fork adaptations (no change to the arithmetic): the fork's attribute name surfaceWaterPiority;
+        #   .get('non_irrigation') because the fork's landSurface has no such option (None branch = fork behaviour);
+        #   remainingIndustryDomestic = the fork's remainingIndustrialDomestic (same formula, GLOBGM l.1848);
+        #   the three outputs are handed to the fork's names below. GLOBGM's companion change to readAvlStorGroundwater
+        #   in non-productive cells is NOT taken (it would activate the inert F02 unit mix).
+        remainingIndustryDomestic = remainingIndustrialDomestic      # GLOBGM name (identical formula)
+
+        # Abstraction and Allocation of SURFACE WATER
+        ##############################################################################################################################
+
+        # if surface water abstraction as the first/top priority after desalinated water
+        if self.surfaceWaterPiority:
+            # estimate of surface water demand
+            surface_water_demand_estimate = self.totalGrossDemandAfterDesalination
+            # - for industrial and domestic sector
+            surface_water_demand_estimate_for_industrial_and_domestic  = remainingIndustryDomestic
+            # - for irrigation and livestock:
+            surface_water_demand_estimate_for_irrigation_and_livestock = remainingIrrigationLivestock
+
+        # surface water is not (always) the first/top priority
+        if self.surfaceWaterPiority == False:
+            
+            # calculate the estimate of surface water demand by considering swAbstractionFractionDict
+
+            # - estimate for industrial and domestic:
+            #########################################
+            # -- fraction of surface water source to meet industrial and domestic demand
+            if swAbstractionFractionDict.get('non_irrigation') is None:
+                swAbstractionFraction_industrial_domestic = pcr.min(swAbstractionFractionDict['max_for_non_irrigation'], \
+                                                                    swAbstractionFractionDict['estimate'])
+            else:
+                swAbstractionFraction_industrial_domestic = swAbstractionFractionDict['non_irrigation']
+            # -- surface water demand for industrial and domestic sectors
+            surface_water_demand_estimate_for_industrial_and_domestic = swAbstractionFraction_industrial_domestic * (self.totalPotentialMaximumDomesticDemand + \
+                                                                                                                     self.totalPotentialMaximumIndustryDemand)
+            surface_water_demand_estimate_for_industrial_and_domestic = pcr.min(remainingIndustryDomestic, \
+                                                                                surface_water_demand_estimate_for_industrial_and_domestic)
+            
+            # - surface water demand, estimate after industrial and domestic sectors
+            surface_water_demand_estimate = surface_water_demand_estimate_for_industrial_and_domestic 
+                        
+            # - estimate for irrigation and livestock:
+            ########################################## 
+            # -- surface water demand for irrigation and livestock, initial estimate 
+            surface_water_demand_estimate_for_irrigation_and_livestock = swAbstractionFractionDict['irrigation'] * (self.totalPotentialMaximumIrrGrossDemand + \
+                                                                                                                    self.totalPotentialMaximumLivestockDemand)
+            surface_water_demand_estimate_for_irrigation_and_livestock = pcr.min(remainingIrrigationLivestock, \
+                                                                                 surface_water_demand_estimate_for_irrigation_and_livestock)
+            # -- surface water source as priority if groundwater irrigation fraction is relatively low  
+            surface_water_demand_estimate_for_irrigation_and_livestock = \
+               pcr.ifthenelse(swAbstractionFractionDict['irrigation'] >= swAbstractionFractionDict['treshold_to_maximize_irrigation_surface_water'], \
+                              remainingIrrigationLivestock, \
+                              surface_water_demand_estimate_for_irrigation_and_livestock)
+            
+            # - update surface water demand, after industrial, domestic, livestock and irrigation sectors
+            surface_water_demand_estimate += surface_water_demand_estimate_for_irrigation_and_livestock
+            
+
+            # prioritize surface water use in non productive aquifers that have limited groundwater supply
+            old_method = False
+            if old_method:
+                # - old method (used in the version 2.1, at least before 16 Aug 2019)
+                # -- the intention is to limit groundwater abstraction in no productive aquifer cells. 
+                surface_water_demand_estimate = pcr.ifthenelse(groundwater.productive_aquifer, surface_water_demand_estimate,\
+                                                                                               pcr.max(0.0, remainingIrrigationLivestock - \
+                                                                                                       pcr.min(groundwater.avgAllocationShort, groundwater.avgAllocation)))
+                # TODO: Discard this old_method? Noted that the GMD run assumed all cells were productive aquifer.                                                
+            else:
+                # - new method (will be used in the version >= 2.2)
+                # -- Note (17 Aug 2019): It is more logical to put such lines (constraining abstraction in non productive aquifers) while calculating groundwater use.  
+                pass
+
+
+            # maximize/optimize surface water use in cells with groundwater supply is overestimated 
+            old_method = False
+            if old_method:
+                # - old method (used in the version 2.1, at least before 16 Aug 2019)
+                # -- overestimation is calulated by considering the maximum of avgAllocationShort (average from the last 7 days) and avgAllocation (365 days)
+                surface_water_demand_estimate += pcr.max(0.0, pcr.max(groundwater.avgAllocationShort, groundwater.avgAllocation) -\
+                       (1.0 - swAbstractionFractionDict['irrigation']) * totalIrrigationLivestockDemand -\
+                       (1.0 - swAbstractionFraction_industrial_domestic) * (self.totalPotentialMaximumGrossDemand - totalIrrigationLivestockDemand))
+            else:
+                # - new method (will be used in the version >= 2.2)
+                groundwater_demand_estimate = pcr.max(0.0, \
+                                              (1.0 - swAbstractionFractionDict['irrigation'])   *  totalIrrigationLivestockDemand +\
+                                              (1.0 - swAbstractionFraction_industrial_domestic) * (self.totalPotentialMaximumGrossDemand - totalIrrigationLivestockDemand))
+                # -- overestimation is calculated by considering only avgAllocationShort (average from the last 7 days)
+                overestimation_of_groundwater_supply = pcr.max(0.0, groundwater.avgAllocationShort - groundwater_demand_estimate)
+                surface_water_demand_estimate = surface_water_demand_estimate + overestimation_of_groundwater_supply
+
+            # total demand that should be allocated from surface water (limited by the remaining demand and concerning the aforementioned factors, e.g. swAbstractionFractionDict))
+            surface_water_demand_estimate = pcr.min(self.totalGrossDemandAfterDesalination, surface_water_demand_estimate)
+
+
+            # make sure that the water balance of surface_water_demand_estimate is closed
+            old_method = False
+            if old_method:
+                # - old method (used in the version 2.1, at least before 16 Aug 2019)
+                # - prioritizing irrigation and livestock over industrial and domestic
+                correctedRemainingIrrigationLivestock = pcr.min(surface_water_demand_estimate, remainingIrrigationLivestock)
+                correctedRemainingIndustryDomestic    = pcr.min(remainingIndustryDomestic,\
+                                                        pcr.max(0.0, surface_water_demand_estimate - remainingIrrigationLivestock))
+                correctedSurfaceWaterDemandEstimate   = correctedRemainingIrrigationLivestock + correctedRemainingIndustryDomestic
+                # - corrected surface water demand estimate 
+                surface_water_demand_estimate = correctedSurfaceWaterDemandEstimate
+                # - for industrial and domestic sector
+                surface_water_demand_estimate_for_industrial_and_domestic = correctedRemainingIndustryDomestic
+                # - for irrigation and livestock:
+                surface_water_demand_estimate_for_irrigation_and_livestock = correctedRemainingIrrigationLivestock
+                # TODO: Discard this old_method?                                                
+            else:
+                # - new method (will be used in the version >= 2.2)
+                # -- Note (17 Aug 2019): Using proportional correction. Note that it is not very logical to prioritize irrigation and livestock over industrial and domestic. Moreover, it is more logical to put such lines (for prioritizing) while allocating surface water use.   
+                # -- proportional correction
+                surface_water_demand_estimate_for_industrial_and_domestic  = surface_water_demand_estimate * \
+                                                                             pcr.min(1.0, vos.getValDivZero(surface_water_demand_estimate_for_industrial_and_domestic, \
+                                                                                                            surface_water_demand_estimate_for_industrial_and_domestic + surface_water_demand_estimate_for_irrigation_and_livestock))
+                surface_water_demand_estimate_for_irrigation_and_livestock = pcr.max(0.0, surface_water_demand_estimate -\
+                                                                                          surface_water_demand_estimate_for_industrial_and_domestic)
+                # --- corrected surface water demand estimate, limited by remaining demand
+                surface_water_demand_estimate_for_industrial_and_domestic  = pcr.min(surface_water_demand_estimate_for_industrial_and_domestic, \
+                                                                                     remainingIndustryDomestic) 
+                surface_water_demand_estimate_for_irrigation_and_livestock = pcr.min(surface_water_demand_estimate_for_irrigation_and_livestock, \
+                                                                                     remainingIrrigationLivestock)
+                surface_water_demand_estimate = surface_water_demand_estimate_for_industrial_and_domestic +\
+                                                surface_water_demand_estimate_for_irrigation_and_livestock
+
+        # make sure demand that should be allocated from surface water limited by the remaining demand
+        surface_water_demand_estimate = pcr.min(self.totalGrossDemandAfterDesalination, surface_water_demand_estimate)
+        
+
+        if self.debugWaterBalance:
+            vos.waterBalanceCheck([surface_water_demand_estimate],\
+                                  [surface_water_demand_estimate_for_industrial_and_domestic, surface_water_demand_estimate_for_irrigation_and_livestock],\
+                                  [pcr.scalar(0.0)],\
+                                  [pcr.scalar(0.0)] ,\
+                                  'partitioning estimate of surface water demand estimate to industrial-domestic and irrigation-livestock', True,\
+                                   currTimeStep.fulldate,threshold=1e-4)
+
+        
+
+        # hand the GLOBGM block's results to the fork's names used by the allocation call and the sector split below
+        surface_water_demand                  = surface_water_demand_estimate
+        correctedSurfaceWaterDemandEstimate   = surface_water_demand_estimate
+        correctedRemainingIrrigationLivestock = surface_water_demand_estimate_for_irrigation_and_livestock
+        #
+        #
+        if self.usingAllocSegments:      # using zone/segment at which supply network is defined
+        #  
+            logger.debug("Allocation of surface water abstraction.")
+        #  
+            volActSurfaceWaterAbstract, volAllocSurfaceWaterAbstract = \
+             vos.waterAbstractionAndAllocation(
+             water_demand_volume = surface_water_demand*routing.cellArea,\
+             available_water_volume = pcr.max(0.00, routing.readAvlChannelStorage),\
+             allocation_zones = allocSegments,\
+             zone_area = self.segmentArea,\
+             high_volume_treshold = 1000000.,\
+             debug_water_balance = True,\
+             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+        #  
+            self.actSurfaceWaterAbstract   = volActSurfaceWaterAbstract / routing.cellArea
+            self.allocSurfaceWaterAbstract = volAllocSurfaceWaterAbstract / routing.cellArea
+        #  
+        else: 
+            logger.debug("Surface water abstraction is only to satisfy local demand (no surface water network).")
+            self.actSurfaceWaterAbstract   = pcr.min(routing.readAvlChannelStorage/routing.cellArea,\
+                                                     surface_water_demand)                            # unit: m
+            self.allocSurfaceWaterAbstract = self.actSurfaceWaterAbstract                             # unit: m   
+        #  
+        self.actSurfaceWaterAbstract   = pcr.ifthen(self.landmask, self.actSurfaceWaterAbstract)
+        self.allocSurfaceWaterAbstract = pcr.ifthen(self.landmask, self.allocSurfaceWaterAbstract)
+        ################################################################################################################################
+        # - end of Abstraction and Allocation of SURFACE WATER
+
+        
+        # water demand that have been satisfied (unit: m/day) - after desalination and surface water supply
+        ################################################################################################################################
+        # - for irrigation and livestock water demand 
+        satisfiedIrrigationLivestockDemandFromSurfaceWater = self.allocSurfaceWaterAbstract * \
+               vos.getValDivZero(correctedRemainingIrrigationLivestock, correctedSurfaceWaterDemandEstimate)
+        # - for irrigation water demand, but not including livestock 
+        satisfiedIrrigationDemandFromSurfaceWater = satisfiedIrrigationLivestockDemandFromSurfaceWater * \
+               vos.getValDivZero(remainingIrrigation, remainingIrrigationLivestock)
+        satisfiedIrrigationDemand += satisfiedIrrigationDemandFromSurfaceWater
+        # - for non irrigation water demand: livestock, domestic and industry 
+        satisfiedNonIrrDemandFromSurfaceWater = pcr.max(0.0, self.allocSurfaceWaterAbstract - satisfiedIrrigationDemandFromSurfaceWater)
+        satisfiedNonIrrDemand += satisfiedNonIrrDemandFromSurfaceWater
+        # - for livestock                                                                      
+        satisfiedLivestockDemand += pcr.max(0.0, satisfiedIrrigationLivestockDemandFromSurfaceWater - \
+                                                 satisfiedIrrigationDemandFromSurfaceWater)
+        # - for industrial and domestic demand (excluding livestock)
+        satisfiedIndustrialDomesticDemandFromSurfaceWater = pcr.max(0.0, self.allocSurfaceWaterAbstract -\
+                                                                         satisfiedIrrigationLivestockDemandFromSurfaceWater)
+        # - for domestic                                                                 
+        satisfiedDomesticDemand += satisfiedIndustrialDomesticDemandFromSurfaceWater * vos.getValDivZero(remainingDomestic, \
+                                                                                                         remainingIndustrialDomestic)
+        # - for industry
+        satisfiedIndustryDemand += satisfiedIndustrialDomesticDemandFromSurfaceWater * vos.getValDivZero(remainingIndustry, \
+                                                                                                         remainingIndustrialDomestic)             
+
+
+
+        ######################################################################################################################
+        # water demand (unit: m) that must be satisfied by groundwater abstraction (not limited to available water)
+        self.potGroundwaterAbstract = pcr.max(0.0, self.totalGrossDemandAfterDesalination - self.allocSurfaceWaterAbstract)
+        ######################################################################################################################
+        # water demand per sector 
+        # - for domestic 
+        remainingDomestic   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['domestic']  - satisfiedDomesticDemand)
+        # - for industry 
+        remainingIndustry   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['industry']  - satisfiedIndustryDemand)
+        # - for livestock 
+        remainingLivestock  = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['livestock'] - satisfiedLivestockDemand)
+        # - for irrigation (excluding livestock)
+        remainingIrrigation = pcr.max(0.0, self.irrGrossDemand - satisfiedIrrigationDemand) 
+        # - total for livestock and irrigation
+        remainingIrrigationLivestock = remainingIrrigation + remainingLivestock
+        # - total for industrial and domestic (excluding livestock)
+        remainingIndustrialDomestic  = remainingIndustry + remainingDomestic                                                     
+        
+
+
+        # Abstraction and Allocation of GROUNDWATER (fossil and non fossil)
+        #########################################################################################################################
+        # estimating groundwater water demand:
+        # - demand for industrial and domestic sectors 
+        #   (all remaining demand for these sectors should be satisfied)
+        groundwater_demand_estimate = remainingIndustrialDomestic
+        # - demand for irrigation and livestock sectors
+        #   (only part of them will be satisfied, as they may be too high due to the uncertainty in the irrigation scheme)
+        irrigationLivestockGroundwaterDemand = pcr.min(remainingIrrigationLivestock, \
+                                               pcr.max(0.0, \
+                                               (1.0 - swAbstractionFractionDict['irrigation'])*totalIrrigationLivestockDemand))
+        groundwater_demand_estimate += irrigationLivestockGroundwaterDemand
+
+
+        #####################################################################################################
+        # water demand that must be satisfied by groundwater abstraction (not limited to available water)
+        self.potGroundwaterAbstract = pcr.min(self.potGroundwaterAbstract, groundwater_demand_estimate)
+        #####################################################################################################
+        
+        # constraining groundwater abstraction with the regional annual pumping capacity
+        if groundwater.limitRegionalAnnualGroundwaterAbstraction:
+
+            logger.debug('Total groundwater abstraction is limited by regional annual pumping capacity.')
+
+            # estimate of total groundwater abstraction (m3) from the last 365 days:
+            tolerating_days = 0.
+            # Run C (F15/W9): the counter uses delivered groundwater by user location (groundwater.avgAllocation), the
+            #   cells the cap trims; avgAbstraction counted pumping by well location, so zones crossing a region border
+            #   let one region's users pump on another region's count. Ships with the F03 revert (ledger v4 #4).
+            annualGroundwaterAbstraction = groundwater.avgAllocation * routing.cellArea *\
+                                           pcr.min(pcr.max(0.0, 365.0 - tolerating_days), routing.timestepsToAvgDischarge)
+            # total groundwater abstraction (m3) from the last 365 days at the regional scale
+            regionalAnnualGroundwaterAbstraction = pcr.areatotal(pcr.cover(annualGroundwaterAbstraction, 0.0), groundwater_pumping_region_ids)
+
+            #~ # reduction factor to reduce groundwater abstraction/demand
+            #~ reductionFactorForPotGroundwaterAbstract = pcr.cover(\
+                                                       #~ pcr.ifthenelse(regionalAnnualGroundwaterAbstractionLimit > 0.0,
+                                                       #~ pcr.max(0.000, regionalAnnualGroundwaterAbstractionLimit -\
+                                                                      #~ regionalAnnualGroundwaterAbstraction) /
+                                                                      #~ regionalAnnualGroundwaterAbstractionLimit , 0.0), 0.0)
+
+            #~ # reduced potential groundwater abstraction (after pumping capacity)
+            #~ self.potGroundwaterAbstract = pcr.min(1.00, reductionFactorForPotGroundwaterAbstract) * self.potGroundwaterAbstract
+
+            #~ # alternative: reduced potential groundwater abstraction (after pumping capacity) and considering the average recharge (baseflow)
+            #~ potGroundwaterAbstract = pcr.min(1.00, reductionFactorForPotGroundwaterAbstract) * self.potGroundwaterAbstract
+            #~ self.potGroundwaterAbstract = pcr.min(self.potGroundwaterAbstract, 
+                                                       #~ potGroundwaterAbstract + pcr.max(0.0, routing.avgBaseflow / routing.cellArea))
+
+
+
+            ################## NEW METHOD #################################################################################################################
+            # the remaining pumping capacity (unit: m3) at the regional scale
+            remainingRegionalAnnualGroundwaterAbstractionLimit = pcr.max(0.0, regionalAnnualGroundwaterAbstractionLimit - \
+                                                                              regionalAnnualGroundwaterAbstraction)
+            # considering safety factor (residence time in day-1)                                                                  
+            remainingRegionalAnnualGroundwaterAbstractionLimit *= 0.33
+            
+            # the remaining pumping capacity (unit: m3) limited by self.potGroundwaterAbstract (at the regional scale)
+            remainingRegionalAnnualGroundwaterAbstractionLimit = pcr.min(remainingRegionalAnnualGroundwaterAbstractionLimit,\
+                                                                         pcr.areatotal(self.potGroundwaterAbstract * routing.cellArea, groundwater_pumping_region_ids))
+            
+            # the remaining pumping capacity (unit: m3) at the pixel scale - downscaled using self.potGroundwaterAbstract
+            remainingPixelAnnualGroundwaterAbstractionLimit = remainingRegionalAnnualGroundwaterAbstractionLimit * \
+                vos.getValDivZero(self.potGroundwaterAbstract * routing.cellArea, pcr.areatotal(self.potGroundwaterAbstract * routing.cellArea, groundwater_pumping_region_ids))
+                
+            # reduced (after pumping capacity) potential groundwater abstraction/demand (unit: m) and considering the average recharge (baseflow) 
+            self.potGroundwaterAbstract = pcr.min(self.potGroundwaterAbstract, \
+                                      remainingPixelAnnualGroundwaterAbstractionLimit/routing.cellArea + pcr.max(0.0, routing.avgBaseflow / routing.cellArea))
+            # Run C (F03/W8): developers' original line restored on purpose (byte-identical to upstream and GLOBGM). The
+            #   baseflow term is m3/s / m2 = m/s added to m/day, so it is inert and the IGRAC regional cap binds. Patch 0015
+            #   had converted it to m/day, which made the cap 'limit + mean baseflow' (34-169 km3/yr per region vs caps
+            #   0.04-1.5) and never binding (pumping 2-47x the caps). The dead fossil-branch line (F04) keeps its fix.
+            ################## end of NEW METHOD (but still under development) ##########################################################################################################
+
+
+
+            #~ # Shall we will always try to fulfil the industrial and domestic demand?
+            #~ self.potGroundwaterAbstract = pcr.max(remainingIndustrialDomestic, self.potGroundwaterAbstract)
+
+            
+        else:
+            logger.debug('NO LIMIT for regional groundwater (annual) pumping. It may result too high groundwater abstraction.')
+        
+
+        # Abstraction and Allocation of NON-FOSSIL GROUNDWATER
+        # #############################################################################################################################
+        # available storGroundwater (non fossil groundwater) that can be accessed (unit: m)
+        readAvlStorGroundwater = pcr.cover(pcr.max(0.00, groundwater.storGroundwater), 0.0)
+        # - considering maximum daily groundwater abstraction
+        readAvlStorGroundwater = pcr.min(readAvlStorGroundwater, groundwater.maximumDailyGroundwaterAbstraction)
+        # - ignore groundwater storage in non-productive aquifer 
+        readAvlStorGroundwater = pcr.ifthenelse(groundwater.productive_aquifer, readAvlStorGroundwater, 0.0)
+        
+        # for non-productive aquifer, reduce readAvlStorGroundwater to the current recharge/baseflow rate
+        readAvlStorGroundwater = pcr.ifthenelse(groundwater.productive_aquifer, \
+                                                readAvlStorGroundwater, pcr.min(readAvlStorGroundwater, pcr.max(routing.avgBaseflow, 0.0)))
+        
+        # avoid the condition that the entire groundwater volume abstracted instantaneously
+        readAvlStorGroundwater *= 0.75
+
+        if groundwater.usingAllocSegments:
+
+            logger.debug('Allocation of non fossil groundwater abstraction.')
+
+            # TODO: considering aquifer productivity while doing the allocation (e.g. using aquifer transmissivity/conductivity)
+            
+            # non fossil groundwater abstraction and allocation in volume (unit: m3)
+            volActGroundwaterAbstract, volAllocGroundwaterAbstract = \
+             vos.waterAbstractionAndAllocation(
+             water_demand_volume = self.potGroundwaterAbstract*routing.cellArea,\
+             available_water_volume = pcr.max(0.00, readAvlStorGroundwater*routing.cellArea),\
+             allocation_zones = groundwater.allocSegments,\
+             zone_area = groundwater.segmentArea,\
+             high_volume_treshold = 1000000.,\
+             debug_water_balance = True,\
+             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+            
+            # non fossil groundwater abstraction and allocation in meter
+            self.nonFossilGroundwaterAbs   = volActGroundwaterAbstract  / routing.cellArea 
+            self.allocNonFossilGroundwater = volAllocGroundwaterAbstract/ routing.cellArea 
+
+        else:
+            
+            logger.debug('Non fossil groundwater abstraction is only for satisfying local demand.')
+            self.nonFossilGroundwaterAbs   = pcr.min(readAvlStorGroundwater, self.potGroundwaterAbstract) 
+            self.allocNonFossilGroundwater = self.nonFossilGroundwaterAbs
+        ################################################################################################################################
+        # - end of Abstraction and Allocation of NON FOSSIL GROUNDWATER
+
+
+
+
+        
+        # water demand that have been satisfied (unit: m/day) - after desalination, surface water and non-fossil groundwater supply 
+        ################################################################################################################################
+        # - for irrigation and livestock water demand 
+        satisfiedIrrigationLivestockDemandFromNonFossilGroundwater = self.allocNonFossilGroundwater * \
+               vos.getValDivZero(irrigationLivestockGroundwaterDemand, groundwater_demand_estimate)
+        # - for irrigation water demand, but not including livestock 
+        satisfiedIrrigationDemandFromNonFossilGroundwater = satisfiedIrrigationLivestockDemandFromNonFossilGroundwater * \
+               vos.getValDivZero(remainingIrrigation, remainingIrrigationLivestock)
+        satisfiedIrrigationDemand += satisfiedIrrigationDemandFromNonFossilGroundwater
+         # - for non irrigation water demand: livestock, domestic and industry 
+        satisfiedNonIrrDemandFromNonFossilGroundwater = pcr.max(0.0, self.allocNonFossilGroundwater - satisfiedIrrigationLivestockDemandFromNonFossilGroundwater)
+        satisfiedNonIrrDemand += satisfiedNonIrrDemandFromNonFossilGroundwater
+        # - for livestock                                                                      
+        satisfiedLivestockDemand += pcr.max(0.0, satisfiedIrrigationLivestockDemandFromNonFossilGroundwater - \
+                                                 satisfiedIrrigationDemandFromNonFossilGroundwater)
+        # - for industrial and domestic demand (excluding livestock)
+        satisfiedIndustrialDomesticDemandFromNonFossilGroundwater = pcr.max(0.0, self.allocNonFossilGroundwater -\
+                                                                                 satisfiedIrrigationLivestockDemandFromNonFossilGroundwater)
+        # - for domestic                                                                 
+        satisfiedDomesticDemand += satisfiedIndustrialDomesticDemandFromNonFossilGroundwater * vos.getValDivZero(remainingDomestic, remainingIndustrialDomestic)
+        # - for industry
+        satisfiedIndustryDemand += satisfiedIndustrialDomesticDemandFromNonFossilGroundwater * vos.getValDivZero(remainingIndustry, remainingIndustrialDomestic)             
+
+
+
+        ######################################################################################################################
+        ######################################################################################################################
+        # water demand that must be satisfied by fossil groundwater abstraction (unit: m, not limited to available water)
+        self.potFossilGroundwaterAbstract = pcr.max(0.0, self.potGroundwaterAbstract - \
+                                                         self.allocNonFossilGroundwater)
+        ######################################################################################################################
+        ######################################################################################################################
+
+
+        # For a run using MODFLOW, the concept of fossil groundwater abstraction is abandoned (self.limitAbstraction == True):
+        if groundwater.useMODFLOW or self.limitAbstraction:
+            logger.debug('Fossil groundwater abstractions are NOT allowed')
+            self.fossilGroundwaterAbstr = pcr.scalar(0.0)
+            self.fossilGroundwaterAlloc = pcr.scalar(0.0)
+
+
+        # Abstraction and Allocation of FOSSIL GROUNDWATER
+        # #####################################################################################################################################
+
+        if self.limitAbstraction == False:                              # TODO: For runs without any water use, we can exclude this. 
+            
+            logger.debug('Fossil groundwater abstractions are allowed.')
+            
+            # the remaining water demand (m/day) for all sectors - NOT limited to self.potFossilGroundwaterAbstract
+            #####################################################################################################################
+            # - for domestic 
+            remainingDomestic   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['domestic']  - satisfiedDomesticDemand)
+            # - for industry 
+            remainingIndustry   = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['industry']  - satisfiedIndustryDemand)
+            # - for livestock 
+            remainingLivestock  = pcr.max(0.0, nonIrrGrossDemandDict['potential_demand']['livestock'] - satisfiedLivestockDemand)
+            # - for irrigation (excluding livestock)
+            remainingIrrigation = pcr.max(0.0, self.irrGrossDemand - satisfiedIrrigationDemand) 
+            # - total for livestock and irrigation
+            remainingIrrigationLivestock = remainingIrrigation + remainingLivestock
+            # - total for industrial and domestic (excluding livestock)
+            remainingIndustrialDomestic  = remainingIndustry + remainingDomestic
+            # - remaining total demand
+            remainingTotalDemand = remainingIrrigationLivestock + remainingIndustrialDomestic                                                     
+
+
+        # constraining fossil groundwater abstraction with regional pumping capacity
+        if groundwater.limitRegionalAnnualGroundwaterAbstraction and self.limitAbstraction == False:
+
+            logger.debug('Fossil groundwater abstraction is allowed, BUT limited by the regional annual pumping capacity.')
+
+            # estimate of total groundwater abstraction (m3) from the last 365 days:
+            # - considering abstraction from non fossil groundwater
+            annualGroundwaterAbstraction += self.nonFossilGroundwaterAbs*routing.cellArea
+            # at the regional scale
+            regionalAnnualGroundwaterAbstraction = pcr.areatotal(pcr.cover(annualGroundwaterAbstraction, 0.0), groundwater_pumping_region_ids)
+            
+            # fossil groundwater demand/asbtraction reduced by pumping capacity (unit: m/day)
+            # - safety factor to avoid the remaining limit abstracted at once (due to overestimation of groundwater demand)
+            safety_factor_for_fossil_abstraction = 1.00
+            self.potFossilGroundwaterAbstract *= pcr.min(1.00,\
+                                                 pcr.cover(\
+                                                 pcr.ifthenelse(regionalAnnualGroundwaterAbstractionLimit > 0.0,
+                                                 pcr.max(0.000, regionalAnnualGroundwaterAbstractionLimit * safety_factor_for_fossil_abstraction-\
+                                                                regionalAnnualGroundwaterAbstraction) /
+                                                                regionalAnnualGroundwaterAbstractionLimit , 0.0), 0.0))
+
+            #~ # Shall we will always try to fulfil the remaining industrial and domestic demand?
+            #~ self.potFossilGroundwaterAbstract = pcr.max(remainingIndustrialDomestic, self.potFossilGroundwaterAbstract)
+
+
+
+        if self.limitAbstraction == False:                              # TODO: For runs without any water use, we can exclude this. 
+
+
+            ###############################################################################################################################
+            # estimate the remaining total demand (unit: m/day) LIMITED to self.potFossilGroundwaterAbstract
+            ###############################################################################################################################
+
+            correctedRemainingTotalDemand = pcr.min(self.potFossilGroundwaterAbstract, remainingTotalDemand)
+
+            # the remaining industrial and domestic demand and livestock (unit: m/day) limited to self.potFossilGroundwaterAbstract
+            # - no correction, we will always try to fulfil these demands
+            correctedRemainingIndustrialDomesticLivestock = pcr.min(remainingIndustrialDomestic + remainingLivestock, correctedRemainingTotalDemand)
+            
+            # the remaining irrigation demand limited to self.potFossilGroundwaterAbstract
+            correctedRemainingIrrigation = pcr.min(remainingIrrigation, \
+                                                    pcr.max(0.0, correctedRemainingTotalDemand - correctedRemainingIndustrialDomesticLivestock))
+            # - ignore small irrigation demand (less than 1 mm)
+            correctedRemainingIrrigation = pcr.rounddown(correctedRemainingIrrigation*1000.)/1000.
+            
+            # the (corrected) remaining total demand (limited to self.potFossilGroundwaterAbstract)
+            correctedRemainingTotalDemand = correctedRemainingIndustrialDomesticLivestock + correctedRemainingIrrigation
+            
+            # the (corrected) remaining industrial and domestic demand (excluding livestock)
+            correctedRemainingIndustrialDomestic = pcr.min(remainingIndustrialDomestic, correctedRemainingTotalDemand)
+
+            # the remaining irrigation and livestock water demand limited to self.potFossilGroundwaterAbstract
+            correctedRemainingIrrigationLivestock = pcr.min(remainingIrrigationLivestock, \
+                                                    pcr.max(0.0, correctedRemainingTotalDemand - correctedRemainingIndustrialDomestic))
+                                                  
+            # the (corrected) remaining total demand (unit: m/day) limited to self.potFossilGroundwaterAbstract
+            correctedRemainingTotalDemand = correctedRemainingIrrigationLivestock + correctedRemainingIndustrialDomestic
+            
+            # TODO: Do the water balance check: correctedRemainingIrrigationLivestock + correctedRemainingIndustrialDomestic <= self.potFossilGroundwaterAbstract                                          
+
+            # constrain the irrigation groundwater demand with groundwater source fraction 
+            correctedRemainingIrrigationLivestock = pcr.min((1.0 - swAbstractionFractionDict['irrigation']) * remainingIrrigationLivestock,\
+                                                             correctedRemainingIrrigationLivestock) 
+            correctedRemainingIrrigationLivestock = pcr.max(0.0,\
+             pcr.min(correctedRemainingIrrigationLivestock,\
+             pcr.max(0.0, totalIrrigationLivestockDemand) * (1.0 - swAbstractionFractionDict['irrigation']) - satisfiedIrrigationDemandFromNonFossilGroundwater))
+            
+            # ignore fossil groundwater abstraction in irrigation areas dominated by swAbstractionFractionDict['irrigation']
+            correctedRemainingIrrigationLivestock = pcr.ifthenelse(\
+                               swAbstractionFractionDict['irrigation'] >= swAbstractionFractionDict['treshold_to_minimize_fossil_groundwater_irrigation'], 0.0,\
+                               correctedRemainingIrrigationLivestock)
+
+            # reduce the fossil irrigation and livestock demands with enough supply of non fossil groundwater (in order to minimize unrealistic areas of fossil groundwater abstraction)
+            # - supply from the average recharge (baseflow) and non fossil groundwater allocation 
+            # PCR-SUR: * secondsPerDay() converts avgBaseflow/cellArea from m/s to m/day, the unit of the two allocation terms
+            nonFossilGroundwaterSupply = pcr.max(pcr.max(0.0, routing.avgBaseflow) / routing.cellArea * vos.secondsPerDay(), \
+                                                 groundwater.avgNonFossilAllocationShort, groundwater.avgNonFossilAllocation)  
+            # - irrigation supply from the non fossil groundwater
+            nonFossilIrrigationGroundwaterSupply  = nonFossilGroundwaterSupply * vos.getValDivZero(remainingIrrigationLivestock, remainingTotalDemand)
+            # - the corrected/reduced irrigation and livestock demand
+            correctedRemainingIrrigationLivestock = pcr.max(0.0, correctedRemainingIrrigationLivestock - nonFossilIrrigationGroundwaterSupply)
+
+            # the corrected remaining total demand (unit: m/day) 
+            correctedRemainingTotalDemand = correctedRemainingIndustrialDomestic + correctedRemainingIrrigationLivestock                                                                                                                                               
+
+            ###############################################################################################################################
+
+            # water demand that must be satisfied by fossil groundwater abstraction           
+            self.potFossilGroundwaterAbstract = pcr.min(self.potFossilGroundwaterAbstract, correctedRemainingTotalDemand)
+            
+            if groundwater.limitFossilGroundwaterAbstraction == False and self.limitAbstraction == False:
+
+                # Note: If limitFossilGroundwaterAbstraction == False, 
+                #       allocation of fossil groundwater abstraction is not needed.  
+                msg  = 'Fossil groundwater abstractions are without limit for satisfying local demand. '
+                msg  = 'Allocation for fossil groundwater abstraction is NOT needed/implemented. '
+                msg += 'However, the fossil groundwater abstraction rate still consider the maximumDailyGroundwaterAbstraction.'
+                logger.debug(msg)
+                
+                # fossil groundwater abstraction (unit: m/day) 
+                self.fossilGroundwaterAbstr = self.potFossilGroundwaterAbstract
+                self.fossilGroundwaterAbstr = \
+                 pcr.min(\
+                 pcr.max(0.0, groundwater.maximumDailyGroundwaterAbstraction - self.nonFossilGroundwaterAbs), self.fossilGroundwaterAbstr)
+                
+                # fossil groundwater allocation (unit: m/day)
+                self.fossilGroundwaterAlloc = self.fossilGroundwaterAbstr
+        
+            if groundwater.limitFossilGroundwaterAbstraction and self.limitAbstraction == False:
+
+                logger.debug('Fossil groundwater abstractions are allowed, but with limit.')
+                
+                # accesible fossil groundwater (unit: m/day)
+                readAvlFossilGroundwater = pcr.ifthenelse(groundwater.productive_aquifer, groundwater.storGroundwaterFossil, 0.0)
+                # - residence time (day-1) or safety factor  (to avoid 'unrealistic' zero fossil groundwater)
+                readAvlFossilGroundwater *= 0.10
+                # - considering maximum daily groundwater abstraction
+                readAvlFossilGroundwater = pcr.min(readAvlFossilGroundwater, groundwater.maximumDailyFossilGroundwaterAbstraction, \
+                                           pcr.max(0.0, groundwater.maximumDailyGroundwaterAbstraction - self.nonFossilGroundwaterAbs))
+                readAvlFossilGroundwater = pcr.max(pcr.cover(readAvlFossilGroundwater, 0.0), 0.0)                                           
+                
+                if groundwater.usingAllocSegments:
+                
+                    logger.debug('Allocation of fossil groundwater abstraction.')
+                
+                    # TODO: considering aquifer productivity while doing the allocation.
+
+                    # fossil groundwater abstraction and allocation in volume (unit: m3)
+                    volActGroundwaterAbstract, volAllocGroundwaterAbstract = \
+                     vos.waterAbstractionAndAllocation(
+                     water_demand_volume = self.potFossilGroundwaterAbstract*routing.cellArea,\
+                     available_water_volume = pcr.max(0.00, readAvlFossilGroundwater*routing.cellArea),\
+                     allocation_zones = groundwater.allocSegments,\
+                     zone_area = groundwater.segmentArea,\
+                     high_volume_treshold = 1000000.,\
+                     debug_water_balance = True,\
+                     extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+                    
+                    # fossil groundwater abstraction and allocation in meter
+                    self.fossilGroundwaterAbstr = volActGroundwaterAbstract  /routing.cellArea 
+                    self.fossilGroundwaterAlloc = volAllocGroundwaterAbstract/routing.cellArea 
+                
+                else:
+                    
+                    logger.debug('Fossil groundwater abstraction is only for satisfying local demand. NO Allocation for fossil groundwater abstraction.')
+                
+                    self.fossilGroundwaterAbstr = pcr.min(pcr.max(0.0, readAvlFossilGroundwater), self.potFossilGroundwaterAbstract)
+                    self.fossilGroundwaterAlloc = self.fossilGroundwaterAbstr 
+        
+
+            # water demand that have been satisfied (m/day) - after desalination, surface water, non fossil groundwater & fossil groundwater
+            ################################################################################################################################
+            
+            # from fossil groundwater, we should prioritize domestic and industrial water demand
+            prioritizeFossilGroundwaterForDomesticIndutrial = False                            # TODO: Define this in the configuration file.
+            
+            if prioritizeFossilGroundwaterForDomesticIndutrial:
+                
+                # - first priority: for industrial and domestic demand (excluding livestock)
+                satisfiedIndustrialDomesticDemandFromFossilGroundwater = pcr.min(self.fossilGroundwaterAlloc, \
+                                                                                 remainingIndustrialDomestic)
+                # - for domestic                                                                 
+                satisfiedDomesticDemand += satisfiedIndustrialDomesticDemandFromFossilGroundwater * vos.getValDivZero(remainingDomestic, \
+                                                                                                                 remainingIndustrialDomestic)
+                # - for industry
+                satisfiedIndustryDemand += satisfiedIndustrialDomesticDemandFromFossilGroundwater * vos.getValDivZero(remainingIndustry, \
+                                                                                                                 remainingIndustrialDomestic)             
+                # - for irrigation and livestock demand
+                satisfiedIrrigationLivestockDemandFromFossilGroundwater = pcr.max(0.0, self.fossilGroundwaterAlloc - \
+                                                                                       satisfiedIndustrialDomesticDemandFromFossilGroundwater)
+                # - for irrigation
+                satisfiedIrrigationDemand += satisfiedIrrigationLivestockDemandFromFossilGroundwater * vos.getValDivZero(remainingIrrigation, \
+                                                                                                                remainingIrrigationLivestock)
+                # - for livestock
+                satisfiedLivestockDemand  += satisfiedIrrigationLivestockDemandFromFossilGroundwater * vos.getValDivZero(remainingLivestock, \
+                                                                                                                remainingIrrigationLivestock)
+            
+            else:
+            
+                # Distribute fossil water proportionaly based on the amount of each sector
+                
+                # - for irrigation and livestock water demand 
+                satisfiedIrrigationLivestockDemandFromFossilGroundwater = self.fossilGroundwaterAlloc * \
+                       vos.getValDivZero(correctedRemainingIrrigationLivestock, correctedRemainingTotalDemand)
+                # - for irrigation water demand, but not including livestock 
+                satisfiedIrrigationDemandFromFossilGroundwater = satisfiedIrrigationLivestockDemandFromFossilGroundwater * \
+                       vos.getValDivZero(remainingIrrigation, remainingIrrigationLivestock)
+                satisfiedIrrigationDemand += satisfiedIrrigationDemandFromFossilGroundwater
+                # - for non irrigation water demand: livestock, domestic and industry 
+                satisfiedNonIrrDemandFromFossilGroundwater = pcr.max(0.0, self.fossilGroundwaterAlloc - satisfiedIrrigationDemandFromFossilGroundwater)
+                satisfiedNonIrrDemand += satisfiedNonIrrDemandFromFossilGroundwater
+                # - for livestock                                                                      
+                satisfiedLivestockDemand += pcr.max(0.0, satisfiedIrrigationLivestockDemandFromFossilGroundwater - \
+                                                         satisfiedIrrigationDemandFromFossilGroundwater)
+                # - for industrial and domestic demand (excluding livestock)
+                satisfiedIndustrialDomesticDemandFromFossilGroundwater = pcr.max(0.0, self.fossilGroundwaterAlloc - \
+                                                                                      satisfiedIrrigationLivestockDemandFromFossilGroundwater)
+                # - for domestic                                                                 
+                satisfiedDomesticDemand += satisfiedIndustrialDomesticDemandFromFossilGroundwater * vos.getValDivZero(remainingDomestic, \
+                                                                                                                 remainingIndustrialDomestic)
+                # - for industry
+                satisfiedIndustryDemand += satisfiedIndustrialDomesticDemandFromFossilGroundwater * vos.getValDivZero(remainingIndustry, \
+                                                                                                                 remainingIndustrialDomestic)             
+
+        # water demand limited to available/allocated water
+        self.totalPotentialGrossDemand = self.fossilGroundwaterAlloc +\
+                                         self.allocNonFossilGroundwater +\
+                                         self.allocSurfaceWaterAbstract +\
+                                         self.desalinationAllocation
+
+        # total groundwater abstraction and allocation (unit: m/day) 
+        self.totalGroundwaterAllocation  = self.allocNonFossilGroundwater + self.fossilGroundwaterAlloc
+        self.totalGroundwaterAbstraction = self.fossilGroundwaterAbstr + self.nonFossilGroundwaterAbs
+
+        # irrigation water demand (excluding livestock) limited to available/allocated water (unit: m/day)
+        self.irrGrossDemand = satisfiedIrrigationDemand                                  # not including livestock 
+        
+
+        # non irrigation water demand (including livestock) limited to available/allocated water (unit: m/day)
+        self.nonIrrGrossDemand = pcr.max(0.0, \
+                                 self.totalPotentialGrossDemand - self.irrGrossDemand)   # livestock, domestic and industry
+        self.domesticWaterWithdrawal  = satisfiedDomesticDemand
+        self.industryWaterWithdrawal  = satisfiedIndustryDemand
+        self.livestockWaterWithdrawal = satisfiedLivestockDemand
+        
+        # return flow (unit: m/day) from non irrigation withdrawal (from domestic, industry and livestock)
+        self.nonIrrReturnFlow = nonIrrGrossDemandDict['return_flow_fraction']['domestic'] * self.domesticWaterWithdrawal +\
+                                nonIrrGrossDemandDict['return_flow_fraction']['industry'] * self.industryWaterWithdrawal +\
+                                nonIrrGrossDemandDict['return_flow_fraction']['livestock']* self.livestockWaterWithdrawal
+        # - Run C (F21): the rounddown of return flow below 0.1 mm/day was removed; at 5 arcmin it discarded ~2/3 of all
+        #   non-irrigation return flow (the cut part silently became consumption)
+        self.nonIrrReturnFlow = pcr.min(self.nonIrrReturnFlow, self.nonIrrGrossDemand)                        
+
+        if self.debugWaterBalance:
+            vos.waterBalanceCheck([self.irrGrossDemand,\
+                                   self.nonIrrGrossDemand],\
+                                  [self.totalPotentialGrossDemand],\
+                                  [pcr.scalar(0.0)],\
+                                  [pcr.scalar(0.0)] ,\
+                                  'waterAllocationForAllSectors',True,\
+                                   currTimeStep.fulldate,threshold=1e-4)
+            vos.waterBalanceCheck([self.domesticWaterWithdrawal,\
+                                   self.industryWaterWithdrawal,\
+                                   self.livestockWaterWithdrawal],\
+                                  [self.nonIrrGrossDemand],\
+                                  [pcr.scalar(0.0)],\
+                                  [pcr.scalar(0.0)] ,\
+                                  'waterAllocationForNonIrrigationSectors',True,\
+                                   currTimeStep.fulldate,threshold=1e-4)
+            vos.waterBalanceCheck([self.irrGrossDemand,\
+                                   self.domesticWaterWithdrawal,\
+                                   self.industryWaterWithdrawal,\
+                                   self.livestockWaterWithdrawal],\
+                                  [self.totalPotentialGrossDemand],\
+                                  [pcr.scalar(0.0)],\
+                                  [pcr.scalar(0.0)] ,\
+                                  'waterAllocationPerSector',True,\
+                                   currTimeStep.fulldate,threshold=1e-4)
+
+        # keep the cell-level results for receiveAllocatedWater (step 5) and the I3 check; the aggregation loop in
+        # update() overwrites the attribute names above with the fraction-weighted sums over the land covers (equal by I3)
+        self.cellDelivered = {'irrGrossDemand'           : self.irrGrossDemand,
+                              'domesticWaterWithdrawal'  : self.domesticWaterWithdrawal,
+                              'industryWaterWithdrawal'  : self.industryWaterWithdrawal,
+                              'livestockWaterWithdrawal' : self.livestockWaterWithdrawal,
+                              'nonIrrGrossDemand'        : self.nonIrrGrossDemand,
+                              'totalPotentialGrossDemand': self.totalPotentialGrossDemand,
+                              'nonIrrReturnFlow'         : self.nonIrrReturnFlow}
 
     def old_style_land_surface_reporting(self,currTimeStep):
 
