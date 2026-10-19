@@ -563,6 +563,22 @@ class GroundwaterModflow(object):
             aquiferLayerPrimaryStorageCoefficient = pcr.ifthen(self.confiningLayerThickness > 0.0, aquiferLayerPrimaryStorageCoefficient)
             # - cover the rest, using the default value
             self.storage_coefficient_1 = pcr.cover(aquiferLayerPrimaryStorageCoefficient, self.storage_coefficient_1)
+        # PCR-SUR Run C (G2b, own; completes, with D, GLOBGM's one-cell/one-drain design for unconfined aquifers): without a
+        # confining layer the aquifer is split into two stacked slices of the same material (de Graaf 2017: "the top layer is
+        # given the same hydraulic properties as the underlying aquifer"). With both slices at Sy the water table is stored
+        # twice (2 Sy per m of head) and the top-only drain (D) gives a recession of J/2 instead of J (de Graaf 2017 eq. 3-4).
+        # The lower slice stays saturated below the water table, so it gets a small elastic storage coefficient; the top slice
+        # keeps Sy (layer type 00 keeps Sy even below its bottom, so the water table always has Sy storage).
+        if "unconfinedLowerLayerStorageCoefficient" in list(self.iniItems.modflowParameterOptions.keys()) and\
+            self.iniItems.modflowParameterOptions['unconfinedLowerLayerStorageCoefficient'] not in ["None", "False", "Default"]:
+            if not self.usePreDefinedConfiningLayer:
+                raise Exception("unconfinedLowerLayerStorageCoefficient needs usePreDefinedConfiningLayer = True")
+            msg = "Set storage coefficient for the lower layer of unconfined aquifers based on the input in 'unconfinedLowerLayerStorageCoefficient'."
+            logger.info(msg)
+            unconfinedLowerLayerStorageCoefficient = vos.readPCRmapClone(self.iniItems.modflowParameterOptions['unconfinedLowerLayerStorageCoefficient'], \
+                                                                         self.cloneMap, self.tmpDir, self.inputDir)
+            self.storage_coefficient_1 = pcr.ifthenelse(self.confiningLayerThickness > 0.0, self.storage_coefficient_1, \
+                                                        unconfinedLowerLayerStorageCoefficient)
         # - correction due to the usage of lat/lon coordinates (same as 'primary' above)
         primary_1 = pcr.cover(self.storage_coefficient_1 * self.cellAreaMap/(pcr.clone().cellSize()*pcr.clone().cellSize()), 0.0)
         primary_1 = pcr.max(1e-20, primary_1)
@@ -1207,11 +1223,15 @@ class GroundwaterModflow(object):
                                                        pcr.max(0.0, self.groundwaterHeadLayer1 - pcr.max(self.max_accesible_elevation, \
                                                                                                          self.bottom_layer_1)))
         # - from the uppermost layer                                                
+        # PCR-SUR Run C (G2b, own): the top slice's head is the water table; it is measured down to the aquifer bottom
+        # (bottom_layer_1) instead of the top slice's own bottom. MODFLOW (layer type 00) keeps storing Sy x head change
+        # when that head is below bottom_layer_2, so with the old floor the reported change was cut off there; now the
+        # reported change equals MODFLOW's storage change (S2 dh2 + S1 dh1) whenever both heads are above the aquifer bottom.
         if self.number_of_layers == 2:\
            accesibleGroundwaterThickness += pcr.ifthen(self.landmask, \
                                                        self.specific_yield_2 * \
                                                        pcr.max(0.0, self.groundwaterHeadLayer2 - pcr.max(self.max_accesible_elevation, \
-                                                                                                         self.bottom_layer_2)))
+                                                                                                         self.bottom_layer_1)))
         # - TODO: Make this flexible for a model that has more than two layers. 
         # - storGroundwater (unit: m) that can be accessed for abstraction
         self.storGroundwater = accesibleGroundwaterThickness                                                                                                
