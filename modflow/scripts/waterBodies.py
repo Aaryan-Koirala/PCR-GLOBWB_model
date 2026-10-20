@@ -140,6 +140,11 @@ class WaterBodies(object):
                             pcr.areamaximum(wbCatchment, \
                             self.waterBodyIds),\
                             self.waterBodyIds)     # = outlet ids   
+        # PCR-SUR (F19): single-outlet filter taken as-is from UU-Hydro/GLOBGM b90b5f0 (waterBodies.py:176-179)
+        # - make sure that there is only one outlet for each water body 
+        self.waterBodyOut = pcr.ifthen(\
+                            pcr.areaorder(pcr.scalar(self.waterBodyOut), \
+                            self.waterBodyOut) == 1., self.waterBodyOut)
         self.waterBodyOut = pcr.ifthen(\
                             pcr.scalar(self.waterBodyIds) > 0.,\
                             self.waterBodyOut)
@@ -521,12 +526,13 @@ class WaterBodies(object):
         # - using reductionFactor in such a way that:
         #   - if relativeCapacity < minResvrFrac : release is terminated
         #   - if relativeCapacity > maxResvrFrac : longterm average
+        #   PCR-SUR (F20): divide by (maxResvrFrac - minResvrFrac)*waterBodyCap (the code multiplied by waterBodyCap: on/off at 10 %)
         reductionFactor = \
          pcr.cover(\
          pcr.min(1.,
          pcr.max(0., \
           self.waterBodyStorage - self.minResvrFrac*self.waterBodyCap)/\
-             (self.maxResvrFrac - self.minResvrFrac)*self.waterBodyCap),0.0)
+             ((self.maxResvrFrac - self.minResvrFrac)*self.waterBodyCap)),0.0)
         #
         resvOutflow = reductionFactor * avgOutflow * length_of_time_step                      # unit: m3
 
@@ -535,7 +541,10 @@ class WaterBodies(object):
 
         # downstream demand (m3/s)
         # reduce demand if storage < lower limit
-        reductionFactor  = vos.getValDivZero(downstreamDemand, self.minResvrFrac*self.waterBodyCap, vos.smallNumber)
+        # PCR-SUR (F18): factor = storage/(minResvrFrac*waterBodyCap) (the code divided the demand itself, so the floor never bound),
+        #                with the demand of the outlet cell, so every cell of a water body gets the same release (mass balance)
+        downstreamDemand = pcr.cover(pcr.areamaximum(pcr.ifthen(self.waterBodyOut, downstreamDemand), self.waterBodyIds), 0.0)
+        reductionFactor  = vos.getValDivZero(self.waterBodyStorage, self.minResvrFrac*self.waterBodyCap, vos.smallNumber)
         reductionFactor  = pcr.cover(reductionFactor, 0.0)
         downstreamDemand = pcr.min(
                            downstreamDemand,

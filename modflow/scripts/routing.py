@@ -1601,7 +1601,8 @@ class Routing(object):
         # - long term average disharge
         #
         dishargeUsed      = pcr.max(0.0, self.discharge)
-        dishargeUsed      = pcr.max(dishargeUsed, self.disChanWaterBody)
+        # PCR-SUR (F08): the discharge statistics (avgDischarge, m2tDischarge, avgDischargeShort) use the cell's own discharge;
+        #                disChanWaterBody (water-body maximum) stays for reporting and the MODFLOW input only
         #
         deltaAnoDischarge = dishargeUsed - self.avgDischarge  
         self.avgDischarge = self.avgDischarge +\
