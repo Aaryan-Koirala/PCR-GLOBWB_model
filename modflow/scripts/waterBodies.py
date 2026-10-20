@@ -140,11 +140,20 @@ class WaterBodies(object):
                             pcr.areamaximum(wbCatchment, \
                             self.waterBodyIds),\
                             self.waterBodyIds)     # = outlet ids   
-        # PCR-SUR (F19): single-outlet filter taken as-is from UU-Hydro/GLOBGM b90b5f0 (waterBodies.py:176-179)
-        # - make sure that there is only one outlet for each water body 
-        self.waterBodyOut = pcr.ifthen(\
-                            pcr.areaorder(pcr.scalar(self.waterBodyOut), \
-                            self.waterBodyOut) == 1., self.waterBodyOut)
+        # PCR-SUR (F19, G6b): one outlet per water body. GLOBGM's areaorder filter (b90b5f0 waterBodies.py:176-179, used in G6)
+        #   breaks a tie between equal candidates differently from year to year (the body jumps at 1 January); the choice is fixed:
+        #   (1) the candidate that drains the largest lake area of its own body, (2) if still equal, the lowest cell number
+        inputWaterBodyIds = self.waterBodyIds
+        candidate   = pcr.defined(self.waterBodyOut)
+        nCandidates = pcr.areatotal(pcr.scalar(candidate), inputWaterBodyIds)            # outlet candidates per input body
+        candUid     = pcr.ifthen(candidate, pcr.uniqueid(candidate))
+        candSub     = pcr.subcatchment(ldd, pcr.nominal(candUid))
+        candBody    = pcr.areamaximum(pcr.scalar(self.waterBodyOut), candSub)
+        ownLake     = pcr.ifthenelse(pcr.scalar(inputWaterBodyIds) == candBody, pcr.cover(self.fracWat * cellArea, 0.0), 0.0)
+        candArea    = pcr.ifthen(candidate, pcr.areatotal(ownLake, candSub))
+        self.waterBodyOut = pcr.ifthen(candArea == pcr.areamaximum(candArea, self.waterBodyOut), self.waterBodyOut)
+        candUid     = pcr.ifthen(pcr.defined(self.waterBodyOut), candUid)
+        self.waterBodyOut = pcr.ifthen(candUid == pcr.areaminimum(candUid, self.waterBodyOut), self.waterBodyOut)
         self.waterBodyOut = pcr.ifthen(\
                             pcr.scalar(self.waterBodyIds) > 0.,\
                             self.waterBodyOut)
@@ -154,6 +163,10 @@ class WaterBodies(object):
         self.waterBodyIds = pcr.ifthen(\
                             pcr.scalar(self.waterBodyIds) > 0.,\
                             pcr.subcatchment(ldd,self.waterBodyOut))
+        # PCR-SUR (F19, G6b): in a body that had more than one outlet candidate, a cell keeps a body id only if it is its own
+        #   input body, so the cells behind the candidates not chosen become river cells (in G6 they could join a body further
+        #   downstream: 12213 -> 21998). Bodies with one candidate keep the developers' behaviour unchanged.
+        self.waterBodyIds = pcr.ifthen((nCandidates < 1.5) | (self.waterBodyIds == inputWaterBodyIds), self.waterBodyIds)
         
         # boolean map for water body outlets:   
         self.waterBodyOut = pcr.ifthen(\
