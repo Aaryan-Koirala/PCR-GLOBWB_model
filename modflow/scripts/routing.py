@@ -597,23 +597,9 @@ class Routing(object):
          pcr.max((self.cellSizeInArcDeg)*0.000000001,\
                  characteristicDistance/self.dist2celllength)           # arcDeg/day
         
-        # charateristicDistance for each lake/reservoir:
-        lakeReservoirCharacteristicDistance = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,
-                                              pcr.areaaverage(characteristicDistance, self.WaterBodies.waterBodyIds))
-        #
-        # - make sure that all outflow will be released outside lakes and reservoirs
-        outlets = pcr.cover(pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyOut) > 0, pcr.boolean(1)), pcr.boolean(0))
-        distance_to_outlets = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,
-                              pcr.ldddist(self.lddMap, outlets, pcr.scalar(1.0)))
-        #~ lakeReservoirCharacteristicDistance = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,
-                                              #~ pcr.max(distance_to_outlets + pcr.downstreamdist(self.lddMap)*1.50, lakeReservoirCharacteristicDistance))
-        lakeReservoirCharacteristicDistance = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,
-                                              pcr.max(distance_to_outlets + pcr.downstreamdist(self.lddMap)*2.50, lakeReservoirCharacteristicDistance))
-        lakeReservoirCharacteristicDistance = pcr.areamaximum(lakeReservoirCharacteristicDistance, self.WaterBodies.waterBodyIds)
-        #
-        # TODO: calculate lakeReservoirCharacteristicDistance while obtaining lake & reservoir parameters
-        
-        characteristicDistance = pcr.cover(lakeReservoirCharacteristicDistance, characteristicDistance)                      
+        # PCR-SUR (F17, G7): the lake/reservoir velocity override (>= distance to the outlet + 2.5 cells per day) is removed.
+        #   It let upstream water cross a water body within the day without entering its storage (23-88 % of the outflow
+        #   bypassed the release rule). Water-body cells are now temporary pits in accuTravelTime, so their velocity is not used.
         
         # PS: In accutraveltime function: 
         #     If characteristicDistance (velocity) = 0 then:
@@ -652,8 +638,14 @@ class Routing(object):
 
         characteristicDistance = self.getCharacteristicDistance(self.yMean, self.wMean)
 
+        # PCR-SUR (F17, G7): water-body cells are temporary pits in the day's routing, so everything that reaches a lake or
+        #   reservoir stays in it and enters waterBodyStorage the next morning (simple_update). PCRaster passes material that
+        #   reaches a pit within the time step as flux (it leaves the system; pcraster source/calc/tt.c), so that flux is added
+        #   back to the body cell's storage below. The body's release is placed below its outlet in simple_update.
+        lddForRouting = pcr.ifthenelse(self.waterBodyCells, pcr.ldd(5), self.lddMap)
+
         # estimating channel discharge (m3/day)
-        self.Q = pcr.accutraveltimeflux(self.lddMap,\
+        self.Q = pcr.accutraveltimeflux(lddForRouting,\
                                         channelStorageForAccuTravelTime,\
                                         pcr.max(0.0, characteristicDistance))
         self.Q = pcr.cover(self.Q, 0.0)
@@ -665,9 +657,12 @@ class Routing(object):
         self.Q = pcr.max(0.0, self.Q)                                    # unit: m3/day        
 
         # updating channelStorage (after routing)
-        self.channelStorage = pcr.accutraveltimestate(self.lddMap,\
+        self.channelStorage = pcr.accutraveltimestate(lddForRouting,\
                               channelStorageForAccuTravelTime,\
                               pcr.max(0.0, characteristicDistance)) # unit: m3
+
+        # PCR-SUR (F17, G7): add back what reached a water-body cell (booked by PCRaster as pit flux)
+        self.channelStorage += pcr.ifthenelse(self.waterBodyCells, self.Q, pcr.scalar(0.0))
 
         # return channelStorageThatWillNotMove to channelStorage:
         self.channelStorage += channelStorageThatWillNotMove             # unit: m3
@@ -835,6 +830,9 @@ class Routing(object):
         #
         if self.includeWaterBodies == False:
             self.WaterBodies.waterBodyIds = pcr.ifthen(self.landmask, pcr.nominal(-1))            # ignoring all lakes and reservoirs 
+        #
+        # PCR-SUR (F17/R2, G7): lake and reservoir cells of today's water-body map (used by R2 below and by accuTravelTime)
+        self.waterBodyCells = pcr.cover(pcr.scalar(self.WaterBodies.waterBodyIds) > 0., pcr.boolean(0))
         
         # downstreamDemand (m3/s) for reservoirs 
         # - this one must be called before updating timestepsToAvgDischarge
@@ -871,6 +869,10 @@ class Routing(object):
         
         # fraction of innundation due to flood (dimensionless) and flood/innundation depth (m)
         self.innundatedFraction, self.floodDepth = self.returnInundationFractionAndFloodDepth(self.channelStorage)
+        # PCR-SUR (R2, G7): in lake/reservoir cells the storage share in channelStorage is lake water, not flood water:
+        #   the inundated fraction is the channel fraction only (the lake surface is in WaterBodies.fracWat) and the flood depth 0
+        self.innundatedFraction = pcr.ifthenelse(self.waterBodyCells, self.channelFraction, self.innundatedFraction)
+        self.floodDepth         = pcr.ifthenelse(self.waterBodyCells, pcr.scalar(0.0), self.floodDepth)
                                 
         # fraction of surface water bodies (dimensionless) including lakes and reservoirs
         # - lake and reservoir surface water fraction
@@ -1100,14 +1102,12 @@ class Routing(object):
                            self.WaterBodies.waterBodyOutflow), 0.0)          # unit: m3/day
         
         if self.method == "accuTravelTime":
-            # distribute outflow to water body storage
-            # - this is to avoid 'waterBodyOutflow' skipping cells 
-            # - this is done by distributing waterBodyOutflow within lake/reservoir cells 
-            #
-            waterBodyOutflow = pcr.areaaverage(waterBodyOutflow, self.WaterBodies.waterBodyIds)
-            waterBodyOutflow = pcr.ifthen(\
-                               pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
-                               waterBodyOutflow)                                 
+            # PCR-SUR (F17, G7): the release enters the river at the first cell below the outlet, the same day, and is routed on
+            #   from there (as in the developers' kinematicWave path: upstream(ldd, outflow)). It is no longer spread over the
+            #   body cells. An outlet that is a pit (coast, clone edge, endorheic basin) has no cell below: the release leaves the
+            #   model there, like river water reaching a pit, and is booked in outgoing_volume_at_pits (via Q, see below).
+            self.waterBodyReleaseAtOutlet = waterBodyOutflow                                         # unit: m3/day, at the outlet
+            waterBodyOutflow = pcr.upstream(self.lddMap, waterBodyOutflow)
         self.waterBodyOutflow = pcr.cover(waterBodyOutflow, 0.0)             # unit: m3/day
 
         # update channelStorage (m3) after waterBodyOutflow (m3)
@@ -1134,12 +1134,24 @@ class Routing(object):
         #
         # channel discharge (m3/s): for current time step
         #
+        if self.method == "accuTravelTime":
+            # PCR-SUR (F17/F32, G7): every cell of a water body carries the body's release as its discharge (the flux that
+            #   reached a body cell is inflow, kept in storage, not discharge): the outlet's discharge is the day's release, F32
+            #   below reports it over the body, and the statistics (F08: own discharge) of body cells follow the release.
+            #   Q is set alike, so a pit outlet books the release in outgoing_volume_at_pits.
+            bodyRelease = pcr.areamaximum(pcr.ifthen(self.WaterBodies.waterBodyOut, self.waterBodyReleaseAtOutlet),\
+                                          self.WaterBodies.waterBodyIds)
+            self.Q = pcr.cover(bodyRelease, self.Q)                    # unit: m3/day
         self.discharge = self.Q / vos.secondsPerDay()
         self.discharge = pcr.max(0., self.discharge)                   # reported channel discharge cannot be negative
         self.discharge = pcr.ifthen(self.landmask, self.discharge)
         #
+        # PCR-SUR (F32, G7): upstream bf9e2482 (2023-12-18) as-is: water-body discharge reported from the outlet, not the body maximum
         self.disChanWaterBody = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,\
-                                pcr.areamaximum(self.discharge,self.WaterBodies.waterBodyIds))
+                                pcr.ifthen(self.WaterBodies.waterBodyOut, self.discharge))
+        self.disChanWaterBody = pcr.cover(self.disChanWaterBody, 0.0)
+        self.disChanWaterBody = pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyIds) > 0.,\
+                                pcr.areamaximum(self.disChanWaterBody,self.WaterBodies.waterBodyIds))
         self.disChanWaterBody = pcr.cover(self.disChanWaterBody, self.discharge)
         self.disChanWaterBody = pcr.ifthen(self.landmask, self.disChanWaterBody)
         #
