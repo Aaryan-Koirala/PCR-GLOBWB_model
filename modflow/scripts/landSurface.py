@@ -682,6 +682,12 @@ class LandSurface(object):
 
             logger.info("If there is any, water demand is satisfied by local source only.")
 
+        # option to prioritize local sources before abstracting water from neighboring cells
+        self.prioritizeLocalSourceToMeetWaterDemand = iniItems.landSurfaceOptions['prioritizeLocalSourceToMeetWaterDemand'] == "True"
+        if self.prioritizeLocalSourceToMeetWaterDemand:
+            msg = "Local water sources are first used before abstracting water from neighboring cells"
+            logger.info(msg)
+
 
     def scaleNaturalLandCoverFractions(self): 
         ''' rescales natural land cover fractions (make sure the total = 1)'''
@@ -982,6 +988,8 @@ class LandSurface(object):
                     routing.WaterBodies.fracWat = vos.readPCRmapClone(\
                                 routing.WaterBodies.fracWaterInp+str(currTimeStep.year)+".map",
                                 self.cloneMap,self.tmpDir,self.inputDir)
+            # Note that the variable used in the following line is FRACWAT (this may be a 'small' bug fixing to the GMD paper version)
+            FRACWAT = pcr.cover(routing.WaterBodies.fracWat, 0.0); 
         FRACWAT = pcr.cover(FRACWAT, 0.0)
         
         # zero fracwat assumption used for debugging against version 1.0
@@ -1466,9 +1474,12 @@ class LandSurface(object):
               available_water_volume = pcr.max(0.00, desalinationWaterUse*routing.cellArea),\
               allocation_zones = allocSegments,\
               zone_area = self.segmentArea,\
-              high_volume_treshold = 1000000.,\
+              high_volume_treshold = None,\
               debug_water_balance = True,\
-              extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+              extra_info_for_water_balance_reporting = str(currTimeStep.fulldate),\
+              landmask = self.landmask,\
+              ignore_small_values = False,\
+              prioritizing_local_source = self.prioritizeLocalSourceToMeetWaterDemand)
         #     
             self.desalinationAbstraction = volDesalinationAbstraction / routing.cellArea
             self.desalinationAllocation  = volDesalinationAllocation  / routing.cellArea
@@ -1679,9 +1690,12 @@ class LandSurface(object):
              available_water_volume = pcr.max(0.00, routing.readAvlChannelStorage),\
              allocation_zones = allocSegments,\
              zone_area = self.segmentArea,\
-             high_volume_treshold = 1000000.,\
+             high_volume_treshold = None,\
              debug_water_balance = True,\
-             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate),\
+             landmask = self.landmask,\
+             ignore_small_values = False,\
+             prioritizing_local_source = self.prioritizeLocalSourceToMeetWaterDemand)
         #  
             self.actSurfaceWaterAbstract   = volActSurfaceWaterAbstract / routing.cellArea
             self.allocSurfaceWaterAbstract = volAllocSurfaceWaterAbstract / routing.cellArea
@@ -1859,9 +1873,12 @@ class LandSurface(object):
              available_water_volume = pcr.max(0.00, readAvlStorGroundwater*routing.cellArea),\
              allocation_zones = groundwater.allocSegments,\
              zone_area = groundwater.segmentArea,\
-             high_volume_treshold = 1000000.,\
+             high_volume_treshold = None,\
              debug_water_balance = True,\
-             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+             extra_info_for_water_balance_reporting = str(currTimeStep.fulldate),\
+             landmask = self.landmask,\
+             ignore_small_values = False,\
+             prioritizing_local_source = self.prioritizeLocalSourceToMeetWaterDemand)
             
             # non fossil groundwater abstraction and allocation in meter
             self.nonFossilGroundwaterAbs   = volActGroundwaterAbstract  / routing.cellArea 
@@ -2079,9 +2096,12 @@ class LandSurface(object):
                      available_water_volume = pcr.max(0.00, readAvlFossilGroundwater*routing.cellArea),\
                      allocation_zones = groundwater.allocSegments,\
                      zone_area = groundwater.segmentArea,\
-                     high_volume_treshold = 1000000.,\
+                     high_volume_treshold = None,\
                      debug_water_balance = True,\
-                     extra_info_for_water_balance_reporting = str(currTimeStep.fulldate))
+                     extra_info_for_water_balance_reporting = str(currTimeStep.fulldate),\
+                     landmask = self.landmask,\
+                     ignore_small_values = False,\
+                     prioritizing_local_source = self.prioritizeLocalSourceToMeetWaterDemand)
                     
                     # fossil groundwater abstraction and allocation in meter
                     self.fossilGroundwaterAbstr = volActGroundwaterAbstract  /routing.cellArea 
