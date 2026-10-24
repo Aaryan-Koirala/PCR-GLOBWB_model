@@ -1411,6 +1411,44 @@ comment[pcrglobwb_variable_name]           = None
 latex_symbol[pcrglobwb_variable_name]      = None
 
 
+# Run C rep (reporting-only rerun): month-end states and allocation diagnostics for the surrogate.
+# The names follow getState()/dumpState(), so a December value equals the year-end state map of the same name.
+# Fixed names: (name, unit). Per-land-cover names are registered at run time by register_run_c_rep_variables(),
+# from the state names landSurface.getState() returns for the land covers of the ini (no cover list kept here).
+run_c_rep_fixed_variables = [('avgDischargeLong'                  , 'm3.s-1'),\
+                             ('m2tDischargeLong'                  , 'm6.s-2'),\
+                             ('avgDischargeShort'                 , 'm3.s-1'),\
+                             ('avgBaseflowLong'                   , 'm3.s-1'),\
+                             ('avgLakeReservoirInflowShort'       , 'm3.s-1'),\
+                             ('avgLakeReservoirOutflowLong'       , 'm3.s-1'),\
+                             ('readAvlChannelStorage'             , 'm3'),\
+                             ('avgTotalGroundwaterAllocationLong' , 'm.day-1'),\
+                             ('avgTotalGroundwaterAllocationShort', 'm.day-1'),\
+                             ('allocSurfaceWaterAbstract'         , 'm.day-1'),\
+                             ('surfaceWaterDemand'                , 'm.day-1'),\
+                             ('swFractionEstimate'                , '1'),\
+                             ('swFractionIrrigation'              , '1')]
+# - land-cover states left out: snow (zero in Thailand)
+run_c_rep_skipped_cover_states = ['snowCoverSWE', 'snowFreeWater']
+
+def _register_run_c_rep_variable(name, unit):
+    if name in netcdf_short_name: return        # never overwrite an existing entry
+    netcdf_short_name[name]         = name
+    netcdf_unit[name]               = unit
+    netcdf_monthly_total_unit[name] = None
+    netcdf_yearly_total_unit[name]  = None
+    netcdf_long_name[name]          = None
+    description[name]               = None
+    comment[name]                   = 'Run C reporting-only rerun'
+    latex_symbol[name]              = None
+
+def register_run_c_rep_variables(cover_state_names):
+    # cover_state_names: list of (name, unit) for the per-land-cover states, built by reporting.py from getState()
+    for name, unit in run_c_rep_fixed_variables + cover_state_names:
+        _register_run_c_rep_variable(name, unit)
+
+for _name, _unit in run_c_rep_fixed_variables: _register_run_c_rep_variable(_name, _unit)
+
 #~ # remove/clear pcrglobwb_variable_name 
 #~ pcrglobwb_variable_name = None
 #~ del pcrglobwb_variable_name

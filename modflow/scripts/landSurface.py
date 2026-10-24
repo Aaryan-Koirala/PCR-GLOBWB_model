@@ -1676,6 +1676,7 @@ class LandSurface(object):
 
         # hand the GLOBGM block's results to the fork's names used by the allocation call and the sector split below
         surface_water_demand                  = surface_water_demand_estimate
+        self.surfaceWaterDemand               = surface_water_demand    # Run C rep: reference kept for reporting only (not read by the model)
         correctedSurfaceWaterDemandEstimate   = surface_water_demand_estimate
         correctedRemainingIrrigationLivestock = surface_water_demand_estimate_for_irrigation_and_livestock
         #

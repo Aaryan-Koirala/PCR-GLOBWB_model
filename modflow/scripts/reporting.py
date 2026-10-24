@@ -64,6 +64,10 @@ class Reporting(object):
 
     def initiate_reporting(self):
         
+        # Run C rep: register the per-land-cover state names (e.g. storUpp_forest) before any netCDF file is created
+        self.run_c_rep_cover_states = self.run_c_rep_cover_state_names()
+        varDicts.register_run_c_rep_variables(self.run_c_rep_cover_states)
+
         # output directory storing netcdf files:
         self.outNCDir  = str(self.configuration.outNCDir)
 
@@ -309,6 +313,18 @@ class Reporting(object):
                                     self.outAnnuaMaxNC
         # - Run C (G1): the last term was outMonthMaxNC a second time and outAnnuaMaxNC was missing; fixed because
         #   additional_post_processing now computes only the variables in this list
+
+    def run_c_rep_cover_state_names(self):
+        # Run C rep: (name, unit) for every land-cover state of getState() except snow, named as dumpState() names the
+        # state maps (state + '_' + cover). Interflow is a store updated daily, reported in m.day-1 like interflowTotal.
+        names = []
+        lsState = self._model.landSurface.getState()
+        for coverType in self._model.landSurface.coverTypes:
+            for variable in sorted(lsState[coverType].keys()):
+                if variable in varDicts.run_c_rep_skipped_cover_states: continue
+                unit = 'm.day-1' if variable == 'interflow' else 'm'
+                names.append((variable + '_' + coverType, unit))
+        return names
 
     def post_processing(self):
 
@@ -879,6 +895,33 @@ class Reporting(object):
         if need("netLqWaterToSoil_at_irrigation_volume"): self.netLqWaterToSoil_at_irrigation_volume = self.netLqWaterToSoil_at_irrigation * self._model.routing.cellArea
         if need("transpiration_from_irrigation_volume"):  self.transpiration_from_irrigation_volume  = self.transpiration_from_irrigation  * self._model.routing.cellArea
         ######################################################################################################################################################################
+
+        # Run C rep (reporting-only rerun): month-end states and allocation diagnostics for the surrogate.
+        # - plain references to model values (no arithmetic), each copied only when requested; the names follow
+        #   getState()/dumpState(), so a December value equals the year-end state map of the same name
+        # - getState() is called only if one of its names is requested; existing reporting names are never touched
+        cover_names = [name for name, unit in self.run_c_rep_cover_states]
+        if need(*cover_names):
+            lsState = self._model.landSurface.getState()
+            for coverType in self._model.landSurface.coverTypes:
+                for variable in lsState[coverType].keys():
+                    name = variable + '_' + coverType
+                    if name in cover_names and need(name): vars(self)[name] = lsState[coverType][variable]
+        routing_names = ['avgDischargeLong', 'm2tDischargeLong', 'avgDischargeShort', 'avgBaseflowLong',
+                         'avgLakeReservoirInflowShort', 'avgLakeReservoirOutflowLong', 'readAvlChannelStorage']
+        if need(*routing_names):
+            routingState = self._model.routing.getState()
+            for name in routing_names:
+                if need(name): vars(self)[name] = routingState[name]
+        groundwater_names = ['avgTotalGroundwaterAllocationLong', 'avgTotalGroundwaterAllocationShort']
+        if need(*groundwater_names):
+            groundwaterState = self._model.groundwater.getState()
+            for name in groundwater_names:
+                if need(name): vars(self)[name] = groundwaterState[name]
+        if need("allocSurfaceWaterAbstract"): self.allocSurfaceWaterAbstract = self._model.landSurface.allocSurfaceWaterAbstract
+        if need("surfaceWaterDemand"):        self.surfaceWaterDemand        = self._model.landSurface.surfaceWaterDemand
+        if need("swFractionEstimate"):        self.swFractionEstimate        = self._model.landSurface.swAbstractionFractionDict['estimate']
+        if need("swFractionIrrigation"):      self.swFractionIrrigation      = self._model.landSurface.swAbstractionFractionDict['irrigation']
 
 
     def report(self):
